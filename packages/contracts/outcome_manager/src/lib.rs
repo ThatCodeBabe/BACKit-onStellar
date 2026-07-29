@@ -496,6 +496,11 @@ impl OutcomeManager {
         storage::get_factory_opt(&env)
     }
 
+    /// Return the fee config: (fee_bps, fee_collector).
+    pub fn fee_config(env: Env) -> (u32, Address) {
+        get_fee_config(&env)
+    }
+
     /// Resolve a market contract address from the configured factory.
     pub fn resolve_market_address(env: Env, call_id: u64) -> Address {
         let factory = match storage::get_factory_opt(&env) {
@@ -734,6 +739,70 @@ impl OutcomeManager {
         }
 
         registry_release_escrow(&env, &registry, call_id, &staker, payout);
+
+        emit_claimable_balance_created(&env, call_id, &staker, &balance_id, payout);
+        emit_payout_claimed(&env, call_id, &staker, payout);
+    }
+
+    /// Same as `claim_payout` but skips `registry_release_escrow` (no re-entrant
+    /// call back to the market).  Use when the market already released the escrow
+    /// before calling this function (avoids contract re-entry in `claim_and_rollover`).
+    pub fn claim_payout_no_release(
+        env: Env,
+        call_id: u64,
+        staker: Address,
+        staker_winning_stake: i128,
+        total_winning_stake: i128,
+        total_losing_stake: i128,
+    ) {
+        if is_paused(&env) {
+            soroban_sdk::panic_with_error!(&env, OutcomeError::ContractPaused);
+        }
+
+        staker.require_auth();
+        require_call_settled(&env, call_id);
+
+        let claimed_key = InstanceKey::Claimed(call_id, staker.clone());
+        if env.storage().instance().has(&claimed_key) {
+            soroban_sdk::panic_with_error!(&env, OutcomeError::AlreadyClaimed);
+        }
+
+        if staker_winning_stake <= 0 {
+            soroban_sdk::panic_with_error!(&env, OutcomeError::NothingToClaim);
+        }
+        if total_winning_stake <= 0 {
+            soroban_sdk::panic_with_error!(&env, OutcomeError::InvalidWinningStake);
+        }
+
+        let (fee_bps, fee_collector) = get_fee_config(&env);
+        let total_fee = compute_total_fee(&env, total_losing_stake, fee_bps);
+        let net_losing = total_losing_stake
+            .checked_sub(total_fee)
+            .unwrap_or_else(|| overflow(&env));
+
+        let (staker_fee_share, payout) = compute_payout_parts(
+            &env,
+            staker_winning_stake,
+            total_winning_stake,
+            total_fee,
+            net_losing,
+        );
+
+        env.storage().instance().set(&claimed_key, &true);
+
+        let mut id_input = Bytes::from_slice(&env, b"claimbal:");
+        id_input.append(&Bytes::from_slice(&env, &call_id.to_be_bytes()));
+        id_input.append(&staker.clone().to_xdr(&env));
+        let balance_id: BytesN<32> = env.crypto().sha256(&id_input).into();
+
+        env.storage().instance().set(
+            &InstanceKey::ClaimableBalanceId(call_id, staker.clone()),
+            &balance_id,
+        );
+
+        if staker_fee_share > 0 {
+            emit_fee_collected(&env, call_id, staker_fee_share, &fee_collector);
+        }
 
         emit_claimable_balance_created(&env, call_id, &staker, &balance_id, payout);
         emit_payout_claimed(&env, call_id, &staker, payout);

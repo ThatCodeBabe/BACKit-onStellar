@@ -1047,9 +1047,36 @@ impl PredictionMarket {
             .checked_sub(total_winning)
             .ok_or(MarketError::Overflow)?;
 
-        let payout = if total_losing > 0 && total_winning > 0 {
+        // Query fee config from outcome_manager and compute after-fee payout.
+        let outcome_manager = config.outcome_manager.clone();
+        let empty_args: Vec<Val> = Vec::new(&env);
+        let (fee_bps, fee_collector): (u32, Address) = env.invoke_contract(
+            &outcome_manager,
+            &Symbol::new(&env, "fee_config"),
+            empty_args,
+        );
+        let total_fee = total_losing
+            .checked_mul(fee_bps as i128)
+            .ok_or(MarketError::Overflow)?
+            .checked_div(10000)
+            .ok_or(MarketError::Overflow)?;
+        let net_losing = total_losing
+            .checked_sub(total_fee)
+            .ok_or(MarketError::Overflow)?;
+
+        let staker_fee_share = if total_winning > 0 {
+            user_winning_stake
+                .checked_mul(total_fee)
+                .ok_or(MarketError::Overflow)?
+                .checked_div(total_winning)
+                .ok_or(MarketError::Overflow)?
+        } else {
+            0
+        };
+
+        let payout_after_fee = if total_losing > 0 && total_winning > 0 {
             let prize_share = user_winning_stake
-                .checked_mul(total_losing)
+                .checked_mul(net_losing)
                 .ok_or(MarketError::Overflow)?
                 .checked_div(total_winning)
                 .ok_or(MarketError::Overflow)?;
@@ -1061,12 +1088,12 @@ impl PredictionMarket {
         };
 
         // Split payout into rollover and payout portions
-        let rollover_amount = payout
+        let rollover_amount = payout_after_fee
             .checked_mul(rollover_config.rollover_percentage_bps as i128)
             .ok_or(MarketError::Overflow)?
             .checked_div(10_000)
             .ok_or(MarketError::Overflow)?;
-        let payout_amount = payout
+        let payout_amount = payout_after_fee
             .checked_sub(rollover_amount)
             .ok_or(MarketError::Overflow)?;
         let bonus = rollover_amount
@@ -1117,13 +1144,17 @@ impl PredictionMarket {
             )
         };
 
-        // Call outcome_manager.claim_payout to mark claim and release payout
-        // to the user.  This uses the user's auth (propagated from the entry
-        // point) for both the claim validation and the release_escrow call.
-        let outcome_manager = config.outcome_manager.clone();
-        let registry = env.current_contract_address();
+        // Transfer fee share + payout directly (avoids re-entrant call back
+        // from outcome_manager.claim_payout → market.release_escrow).
+        let market_addr = env.current_contract_address();
+        if staker_fee_share > 0 {
+            transfer_token(&env, &call.stake_token, &market_addr, &fee_collector, staker_fee_share);
+        }
+        transfer_token(&env, &call.stake_token, &market_addr, &user, payout_after_fee);
+
+        // Call outcome_manager.claim_payout_no_release to record the
+        // claim (no release_escrow call → no re-entry).
         let claim_args = (
-            registry,
             call_id,
             user.clone(),
             user_winning_stake,
@@ -1133,7 +1164,7 @@ impl PredictionMarket {
             .into_val(&env);
         env.invoke_contract::<()>(
             &outcome_manager,
-            &Symbol::new(&env, "claim_payout"),
+            &Symbol::new(&env, "claim_payout_no_release"),
             claim_args,
         );
 
