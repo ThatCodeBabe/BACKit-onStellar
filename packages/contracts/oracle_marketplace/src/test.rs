@@ -6,10 +6,7 @@ use crate::{
     types::{MarketplaceConfig, OracleProvider},
     OracleMarketplace, OracleMarketplaceClient,
 };
-use soroban_sdk::{
-    testutils::Address as AddressTest,
-    Address, BytesN, Env,
-};
+use soroban_sdk::{testutils::Address as AddressTest, Address, BytesN, Env};
 
 #[test]
 fn initialize_marketplace() {

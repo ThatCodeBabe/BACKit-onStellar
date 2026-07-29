@@ -82,7 +82,11 @@ pub struct ParlayBetting;
 
 #[contractimpl]
 impl ParlayBetting {
-    pub fn initialize(env: Env, admin: Address, outcome_manager: Address) -> Result<(), ParlayError> {
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        outcome_manager: Address,
+    ) -> Result<(), ParlayError> {
         if get_config(&env).is_some() {
             return Err(ParlayError::AlreadyInitialized);
         }

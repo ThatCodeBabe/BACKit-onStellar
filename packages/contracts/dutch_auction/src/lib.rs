@@ -125,8 +125,7 @@ impl DutchAuction {
         match info.condition_type {
             1 => Ok(info.start_price * 2 * (duration as i128 - elapsed as i128) / duration as i128),
             2 => {
-                let numerator =
-                    info.start_price * (duration as i128 + 3 * elapsed as i128);
+                let numerator = info.start_price * (duration as i128 + 3 * elapsed as i128);
                 Ok(numerator / (2 * duration as i128))
             }
             _ => Err(DutchAuctionError::UnknownConditionType),
@@ -155,7 +154,12 @@ impl DutchAuction {
         config.oracle_deadline_secs = oracle_deadline_secs;
         config.settler_reward_bps = settler_reward_bps;
         set_config(&env, &config);
-        emit_auth_params_changed(&env, auction_duration_secs, oracle_deadline_secs, settler_reward_bps);
+        emit_auth_params_changed(
+            &env,
+            auction_duration_secs,
+            oracle_deadline_secs,
+            settler_reward_bps,
+        );
         Ok(())
     }
 }
