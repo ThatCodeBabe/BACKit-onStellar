@@ -11,8 +11,8 @@ doctest = false
 [dependencies]
 soroban-sdk = { workspace = true }
 backit-shared = { workspace = true }
-prediction-market = { path = "../prediction_market" }
-prediction-market-factory = { path = "../prediction_market_factory" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+prediction-market = { path = "../prediction_market" }
+prediction-market-factory = { path = "../prediction_market_factory" }

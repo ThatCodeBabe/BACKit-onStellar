@@ -26,12 +26,56 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, token, Address, Env, Vec,
+    contract, contractclient, contracterror, contractimpl, contracttype, token, Address, Bytes, BytesN, Env, Map, Vec,
 };
 
-// Import client types from prediction-market and prediction-market-factory
-use prediction_market::PredictionMarketClient;
-use prediction_market_factory::PredictionMarketFactoryClient;
+/// Describes the price-movement condition that determines the winning outcome (mirrored from prediction_market).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConditionType {
+    TargetAbove(i128),
+    TargetBelow(i128),
+    PercentUp(u32),
+    PercentDown(u32),
+    Range(i128, i128),
+}
+
+/// Mirrors prediction_market::Call so prediction_market_futures can deserialize it cross-contract.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Call {
+    pub id: u64,
+    pub creator: Address,
+    pub stake_token: Address,
+    pub stake_amount: i128,
+    pub end_ts: u64,
+    pub token_address: Address,
+    pub pair_id: Bytes,
+    pub metadata_hash: BytesN<32>,
+    pub outcome_count: u32,
+    pub outcome_stakes: Map<u32, i128>,
+    pub stakes: Map<u32, Map<Address, i128>>,
+    pub outcome: u32,
+    pub start_price: i128,
+    pub end_price: i128,
+    pub condition: ConditionType,
+    pub settled: bool,
+    pub voided: bool,
+    pub created_at: u64,
+    pub cancelled: bool,
+    pub metadata_version: u32,
+    pub share_tokens: Map<u32, Address>,
+}
+
+#[contractclient(name = "PredictionMarketFactoryClient")]
+pub trait PredictionMarketFactory {
+    fn get_market(env: Env, call_id: u64) -> Address;
+}
+
+#[contractclient(name = "PredictionMarketClient")]
+pub trait PredictionMarket {
+    fn get_call(env: Env, call_id: u64) -> Call;
+}
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -85,11 +129,11 @@ pub enum DataKey {
     ActiveFutures(u64), // call_id -> Vec<u64>
 }
 
-fn get_factory(env: &Env) -> Option<Address> {
+fn get_futures_factory(env: &Env) -> Option<Address> {
     env.storage().instance().get(&DataKey::Factory)
 }
 
-fn set_factory(env: &Env, factory: &Address) {
+fn set_futures_factory(env: &Env, factory: &Address) {
     env.storage().instance().set(&DataKey::Factory, factory);
 }
 
@@ -159,10 +203,10 @@ pub struct PredictionMarketFutures;
 impl PredictionMarketFutures {
     /// Initializes the standalone futures contract with the PredictionMarketFactory address.
     pub fn initialize(env: Env, factory: Address) -> Result<(), FuturesError> {
-        if get_factory(&env).is_some() {
+        if get_futures_factory(&env).is_some() {
             return Err(FuturesError::AlreadyInitialized);
         }
-        set_factory(&env, &factory);
+        set_futures_factory(&env, &factory);
         Ok(())
     }
 
@@ -189,7 +233,7 @@ impl PredictionMarketFutures {
             return Err(FuturesError::InvalidExpiry);
         }
 
-        let factory = get_factory(&env).ok_or(FuturesError::NotInitialized)?;
+        let factory = get_futures_factory(&env).ok_or(FuturesError::NotInitialized)?;
         let factory_client = PredictionMarketFactoryClient::new(&env, &factory);
 
         let market_addr = factory_client.get_market(&call_id);
@@ -258,7 +302,7 @@ impl PredictionMarketFutures {
             return Err(FuturesError::ContractExpired);
         }
 
-        let factory = get_factory(&env).ok_or(FuturesError::NotInitialized)?;
+        let factory = get_futures_factory(&env).ok_or(FuturesError::NotInitialized)?;
         let factory_client = PredictionMarketFactoryClient::new(&env, &factory);
 
         let market_addr = factory_client.get_market(&position.call_id);
@@ -298,7 +342,7 @@ impl PredictionMarketFutures {
             return Err(FuturesError::ContractNotExpired);
         }
 
-        let factory = get_factory(&env).ok_or(FuturesError::NotInitialized)?;
+        let factory = get_futures_factory(&env).ok_or(FuturesError::NotInitialized)?;
         let factory_client = PredictionMarketFactoryClient::new(&env, &factory);
 
         let market_addr = factory_client.get_market(&position.call_id);
@@ -442,6 +486,6 @@ impl PredictionMarketFutures {
 
     /// View function returning the configured factory address.
     pub fn get_factory(env: Env) -> Result<Address, FuturesError> {
-        get_factory(&env).ok_or(FuturesError::NotInitialized)
+        get_futures_factory(&env).ok_or(FuturesError::NotInitialized)
     }
 }
