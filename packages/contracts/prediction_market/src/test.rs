@@ -4,14 +4,16 @@ extern crate std;
 
 use crate::{
     errors::MarketError,
-    types::{ConditionType, MarketInitArgs},
+    types::{ConditionType, MarketInitArgs, RolloverConfig},
     PredictionMarket, PredictionMarketClient,
 };
 use soroban_sdk::{
+    contract, contractimpl, contracttype,
     testutils::{Address as _, Ledger as _},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Bytes, BytesN, Env,
+    vec, Address, Bytes, BytesN, Env, IntoVal, Symbol, Val, Vec,
 };
+use rand::RngCore;
 
 fn setup_token(env: &Env, admin: &Address) -> Address {
     let token = env.register_stellar_asset_contract_v2(admin.clone());
@@ -575,4 +577,521 @@ fn limit_order_over_cap_is_skipped_without_aborting_triggering_stake() {
     assert_eq!(market.get_user_orders(&capped_orderer).len(), 1);
 
     let _ = order1;
+}
+
+// ─── Rollover ──────────────────────────────────────────────────────────────
+
+/// Read a compiled WASM from disk and upload it to the test env.
+fn upload_wasm(env: &Env, filename: &str) -> Option<BytesN<32>> {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest_dir.join("..");
+    let v1_debug = root.join("target/wasm32v1-none/debug");
+    let v1_release = root.join("target/wasm32v1-none/release");
+    let unknown_debug = root.join("target/wasm32-unknown-unknown/debug");
+    let unknown_release = root.join("target/wasm32-unknown-unknown/release");
+    let candidates = [
+        v1_debug.join(filename),
+        v1_release.join(filename),
+        unknown_debug.join(filename),
+        unknown_release.join(filename),
+    ];
+    let path = candidates.iter().find(|p| p.exists())?;
+    let bytes = std::fs::read(path).ok()?;
+    Some(env.deployer().upload_contract_wasm(bytes.as_slice()))
+}
+
+/// Outcome-manager contract type mirror (avoids adding outcome-manager as a
+/// dev-dependency, which triggers a MinGW export-ordinal overflow).
+#[contracttype]
+#[derive(Clone)]
+struct SignedOutcome {
+    pub call_id: u64,
+    pub outcome: u32,
+    pub price: i128,
+    pub timestamp: u64,
+    pub oracle_pubkey: BytesN<32>,
+    pub signature: BytesN<64>,
+}
+
+/// Mock factory — deployed in place of the real PredictionMarketFactory to
+/// avoid the circular dev-dependency that causes the export-ordinal linker
+/// crash on Windows/MinGW.
+#[contracttype]
+struct MockConfig {
+    admin: Address,
+    outcome_manager: Address,
+    market_wasm_hash: BytesN<32>,
+    min_stake: i128,
+    max_stake_per_user: i128,
+    staking_cutoff_secs: u64,
+}
+
+#[contracttype]
+enum MockKey {
+    Config,
+    Counter,
+    Market(u64),
+}
+
+#[contract]
+struct MockFactory;
+
+#[contractimpl]
+impl MockFactory {
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        outcome_manager: Address,
+        market_wasm_hash: BytesN<32>,
+        min_stake: i128,
+    ) {
+        env.storage().instance().set(
+            &MockKey::Config,
+            &MockConfig {
+                admin,
+                outcome_manager,
+                market_wasm_hash,
+                min_stake,
+                max_stake_per_user: 0,
+                staking_cutoff_secs: 300,
+            },
+        );
+    }
+
+    pub fn whitelist_token(_env: Env, _token: Address) {}
+
+    pub fn deploy_market(env: Env, creator: Address, args: MarketInitArgs) -> Address {
+        let cfg: MockConfig = env.storage().instance().get(&MockKey::Config).unwrap();
+        let count: u64 = env.storage().instance().get(&MockKey::Counter).unwrap_or(0);
+        let call_id = count + 1;
+
+        let salt: BytesN<32> = {
+            let mut raw = Bytes::from_slice(&env, b"market:");
+            raw.append(&Bytes::from_slice(&env, &call_id.to_be_bytes()));
+            env.crypto().sha256(&raw).into()
+        };
+
+        let market_addr = env
+            .deployer()
+            .with_address(env.current_contract_address(), salt)
+            .deploy_v2(
+                cfg.market_wasm_hash,
+                (
+                    call_id,
+                    creator,
+                    cfg.outcome_manager,
+                    env.current_contract_address(),
+                    cfg.min_stake,
+                    cfg.max_stake_per_user,
+                    cfg.staking_cutoff_secs,
+                    args,
+                ),
+            );
+
+        env.storage().instance().set(&MockKey::Market(call_id), &market_addr);
+        env.storage().instance().set(&MockKey::Counter, &(count + 1));
+        market_addr
+    }
+
+    pub fn get_market(env: Env, call_id: u64) -> Address {
+        env.storage().instance().get(&MockKey::Market(call_id)).unwrap()
+    }
+
+    pub fn get_market_count(env: Env) -> u64 {
+        env.storage().instance().get(&MockKey::Counter).unwrap_or(0)
+    }
+}
+
+struct RolloverTestContext<'a> {
+    env: Env,
+    token: Address,
+    market: PredictionMarketClient<'a>,
+    call_id: u64,
+    winner: Address,
+    loser: Address,
+    price: i128,
+    outcome_mgr_id: Address,
+    factory_id: Address,
+}
+
+fn setup_rollover_env<'a>() -> Option<RolloverTestContext<'a>> {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.budget().reset_unlimited();
+
+    let admin = Address::generate(&env);
+    let winner = Address::generate(&env);
+    let loser = Address::generate(&env);
+    let fee_collector = Address::generate(&env);
+    let price = 110_000_000i128;
+
+    // Token
+    let token = {
+        let t = env.register_stellar_asset_contract_v2(admin.clone());
+        let sac = t.address();
+        StellarAssetClient::new(&env, &sac).mint(&admin, &100_000_000_000);
+        TokenClient::new(&env, &sac).transfer(&admin, &winner, &10_000_000);
+        TokenClient::new(&env, &sac).transfer(&admin, &loser, &10_000_000);
+        sac
+    };
+
+    // Deploy outcome_manager from compiled WASM
+    let outcome_wasm = upload_wasm(&env, "outcome_manager.wasm")?;
+    let om_salt = BytesN::from_array(&env, &[0u8; 32]);
+    let outcome_mgr_id = env
+        .deployer()
+        .with_address(admin.clone(), om_salt)
+        .deploy_v2(outcome_wasm, ());
+
+    // Oracle keypair
+    let mut seed = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut seed);
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let verifying_key = signing_key.verifying_key();
+    let oracle_pubkey = BytesN::from_array(&env, &verifying_key.to_bytes());
+
+    // Initialize outcome_manager via raw invoke_contract
+    let mut oracles = Vec::<BytesN<32>>::new(&env);
+    oracles.push_back(oracle_pubkey.clone());
+    let _: Val = env.invoke_contract(
+        &outcome_mgr_id,
+        &Symbol::new(&env, "initialize"),
+        vec![
+            &env,
+            admin.clone().into_val(&env),
+            oracles.into_val(&env),
+            1u32.into_val(&env),
+            fee_collector.into_val(&env),
+            100u32.into_val(&env),
+            0u64.into_val(&env),
+        ],
+    );
+
+    // Upload market WASM and deploy mock factory
+    let market_wasm = upload_wasm(&env, "prediction_market.wasm")?;
+    let factory_id = env.register(MockFactory, ());
+    let factory = MockFactoryClient::new(&env, &factory_id);
+    factory.initialize(&admin, &outcome_mgr_id, &market_wasm, &100_000);
+    factory.whitelist_token(&token);
+
+    // Link outcome_manager to the factory
+    let _: Val = env.invoke_contract(
+        &outcome_mgr_id,
+        &Symbol::new(&env, "set_factory"),
+        vec![&env, factory_id.clone().into_val(&env)],
+    );
+
+    // Deploy first market through the factory (so factory.get_market works)
+    let end_ts = env.ledger().timestamp() + 3600;
+    let args = MarketInitArgs {
+        stake_token: token.clone(),
+        stake_amount: 1_000_000,
+        start_price: 100_000_000,
+        end_ts,
+        token_address: token.clone(),
+        pair_id: Bytes::from_slice(&env, b"XLM-USDC"),
+        metadata_hash: BytesN::from_array(&env, &[1u8; 32]),
+        condition: ConditionType::TargetAbove(105_000_000),
+        outcome_count: 2,
+    };
+    let market_id = factory.deploy_market(&winner, &args);
+    let market = PredictionMarketClient::new(&env, &market_id);
+
+    let call_id = 1u64;
+    market.stake_on_call(&winner, &call_id, &2_000_000, &1u32);
+    market.stake_on_call(&loser, &call_id, &3_000_000, &2u32);
+
+    // Fast-forward past end_ts and resolve
+    env.ledger().set_timestamp(end_ts + 1);
+
+    let msg = backit_shared::build_message(&env, call_id, 1u32, price, end_ts + 1);
+    let mut msg_bytes = [0u8; 128];
+    let msg_len = msg.len() as usize;
+    msg.copy_into_slice(&mut msg_bytes[..msg_len]);
+    use ed25519_dalek::Signer;
+    let signature = signing_key.sign(&msg_bytes[..msg_len]);
+    let sig_bytes = BytesN::from_array(&env, &signature.to_bytes());
+
+    let signed = SignedOutcome {
+        call_id,
+        outcome: 1u32,
+        price,
+        timestamp: end_ts + 1,
+        oracle_pubkey: oracle_pubkey.clone(),
+        signature: sig_bytes,
+    };
+    let _: Val = env.invoke_contract(
+        &outcome_mgr_id,
+        &Symbol::new(&env, "submit_outcome_for_market"),
+        vec![&env, signed.into_val(&env), end_ts.into_val(&env)],
+    );
+    let _: Val = env.invoke_contract(
+        &outcome_mgr_id,
+        &Symbol::new(&env, "mark_settled"),
+        vec![&env, market_id.clone().into_val(&env), call_id.into_val(&env)],
+    );
+
+    Some(RolloverTestContext {
+        env,
+        token,
+        market,
+        call_id,
+        winner,
+        loser,
+        price,
+        outcome_mgr_id,
+        factory_id,
+    })
+}
+
+// ─── Rollover tests ─────────────────────────────────────────────────────────
+
+#[test]
+fn rollover_partial_50_percent() {
+    let ctx = match setup_rollover_env() {
+        Some(c) => c,
+        None => {
+            std::println!("SKIP: compile WASM first");
+            return;
+        }
+    };
+
+    let rollover_config = RolloverConfig {
+        new_condition: ConditionType::TargetAbove(110_000_000),
+        new_duration_secs: 3600,
+        rollover_percentage_bps: 5000,
+    };
+
+    let balance_before = TokenClient::new(&ctx.env, &ctx.token).balance(&ctx.winner);
+
+    let new_call_id = ctx.market.claim_and_rollover(
+        &ctx.winner,
+        &ctx.call_id,
+        &rollover_config,
+    );
+
+    let balance_after = TokenClient::new(&ctx.env, &ctx.token).balance(&ctx.winner);
+
+    // Payout = 2M + 2M * 3M / 2M = 5M. 50% rollover = 2.5M. Bonus = 25K.
+    // User receives 2.5M in wallet.
+    assert_eq!(balance_after - balance_before, 2_500_000);
+
+    let factory = MockFactoryClient::new(&ctx.env, &ctx.factory_id);
+    assert_eq!(factory.get_market_count(), 2);
+
+    let new_market_addr = factory.get_market(&new_call_id);
+    let new_market = PredictionMarketClient::new(&ctx.env, &new_market_addr);
+
+    let new_call = new_market.get_call(&new_call_id);
+    assert_eq!(new_call.creator, ctx.winner);
+    assert_eq!(new_call.parent_call_id, Some(ctx.call_id));
+    assert_eq!(new_call.rolled_amount, 2_500_000);
+
+    let chain = new_market.get_rollover_chain(&new_call_id);
+    assert_eq!(chain.len(), 1);
+    assert_eq!(chain.get(0).unwrap().call_id, ctx.call_id);
+
+    let winner_stake = new_market.get_staker_stake(&new_call_id, &ctx.winner, &1u32);
+    assert_eq!(winner_stake, 2_500_000);
+
+    assert!(ctx.market.get_user_claimed_state(&ctx.call_id, &ctx.winner));
+}
+
+#[test]
+fn rollover_full_100_percent() {
+    let ctx = match setup_rollover_env() {
+        Some(c) => c,
+        None => {
+            std::println!("SKIP: compile WASM first");
+            return;
+        }
+    };
+
+    let rollover_config = RolloverConfig {
+        new_condition: ConditionType::TargetAbove(110_000_000),
+        new_duration_secs: 3600,
+        rollover_percentage_bps: 10000,
+    };
+
+    let balance_before = TokenClient::new(&ctx.env, &ctx.token).balance(&ctx.winner);
+
+    let new_call_id = ctx.market.claim_and_rollover(
+        &ctx.winner,
+        &ctx.call_id,
+        &rollover_config,
+    );
+
+    let balance_after = TokenClient::new(&ctx.env, &ctx.token).balance(&ctx.winner);
+    assert_eq!(balance_after, balance_before);
+
+    let factory = MockFactoryClient::new(&ctx.env, &ctx.factory_id);
+    let new_market = PredictionMarketClient::new(
+        &ctx.env,
+        &factory.get_market(&new_call_id),
+    );
+    let winner_stake = new_market.get_staker_stake(&new_call_id, &ctx.winner, &1u32);
+    assert_eq!(winner_stake, 5_000_000);
+}
+
+#[test]
+fn rollover_chain_of_three_markets() {
+    let ctx = match setup_rollover_env() {
+        Some(c) => c,
+        None => {
+            std::println!("SKIP: compile WASM first");
+            return;
+        }
+    };
+
+    // Market 1 → market 2
+    let rollover1 = RolloverConfig {
+        new_condition: ConditionType::TargetAbove(110_000_000),
+        new_duration_secs: 3600,
+        rollover_percentage_bps: 5000,
+    };
+    let call2_id = ctx.market.claim_and_rollover(
+        &ctx.winner,
+        &ctx.call_id,
+        &rollover1,
+    );
+
+    let factory = MockFactoryClient::new(&ctx.env, &ctx.factory_id);
+    let market2 = PredictionMarketClient::new(&ctx.env, &factory.get_market(&call2_id));
+
+    // Stake, fast-forward, and resolve market 2 so we can roll it over again.
+    market2.stake_on_call(&ctx.loser, &call2_id, &1_000_000, &2u32);
+    let ts = ctx.env.ledger().timestamp() + 3601;
+    ctx.env.ledger().set_timestamp(ts);
+
+    // Generate a new oracle keypair for resolution
+    let mut seed = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut seed);
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let oracle_pubkey = BytesN::from_array(&ctx.env, &signing_key.verifying_key().to_bytes());
+
+    let msg = backit_shared::build_message(&ctx.env, call2_id, 1u32, ctx.price, ts);
+    let mut msg_bytes = [0u8; 128];
+    let msg_len = msg.len() as usize;
+    msg.copy_into_slice(&mut msg_bytes[..msg_len]);
+    use ed25519_dalek::Signer;
+    let sig = signing_key.sign(&msg_bytes[..msg_len]);
+
+    let signed = SignedOutcome {
+        call_id: call2_id,
+        outcome: 1u32,
+        price: ctx.price,
+        timestamp: ts,
+        oracle_pubkey,
+        signature: BytesN::from_array(&ctx.env, &sig.to_bytes()),
+    };
+    let _: Val = ctx.env.invoke_contract(
+        &ctx.outcome_mgr_id,
+        &Symbol::new(&ctx.env, "submit_outcome_for_market"),
+        vec![&ctx.env, signed.into_val(&ctx.env), (ts - 1).into_val(&ctx.env)],
+    );
+    let _: Val = ctx.env.invoke_contract(
+        &ctx.outcome_mgr_id,
+        &Symbol::new(&ctx.env, "mark_settled"),
+        vec![
+            &ctx.env,
+            factory.get_market(&call2_id).into_val(&ctx.env),
+            call2_id.into_val(&ctx.env),
+        ],
+    );
+
+    // Market 2 → market 3
+    let rollover2 = RolloverConfig {
+        new_condition: ConditionType::TargetAbove(120_000_000),
+        new_duration_secs: 3600,
+        rollover_percentage_bps: 5000,
+    };
+    let call3_id = market2.claim_and_rollover(
+        &ctx.winner,
+        &call2_id,
+        &rollover2,
+    );
+
+    let market3 = PredictionMarketClient::new(
+        &ctx.env,
+        &factory.get_market(&call3_id),
+    );
+
+    let chain = market3.get_rollover_chain(&call3_id);
+    assert_eq!(chain.len(), 1);
+    assert_eq!(chain.get(0).unwrap().call_id, call2_id);
+
+    let call3 = market3.get_call(&call3_id);
+    assert_eq!(call3.parent_call_id, Some(call2_id));
+
+    let call2 = market2.get_call(&call2_id);
+    assert_eq!(call2.parent_call_id, Some(ctx.call_id));
+}
+
+#[test]
+fn rollover_bonus_calculation() {
+    let ctx = match setup_rollover_env() {
+        Some(c) => c,
+        None => {
+            std::println!("SKIP: compile WASM first");
+            return;
+        }
+    };
+
+    let rollover_config = RolloverConfig {
+        new_condition: ConditionType::TargetAbove(110_000_000),
+        new_duration_secs: 3600,
+        rollover_percentage_bps: 5000,
+    };
+
+    let new_call_id = ctx.market.claim_and_rollover(
+        &ctx.winner,
+        &ctx.call_id,
+        &rollover_config,
+    );
+
+    let factory = MockFactoryClient::new(&ctx.env, &ctx.factory_id);
+    let new_market_addr = factory.get_market(&new_call_id);
+    let new_market = PredictionMarketClient::new(&ctx.env, &new_market_addr);
+
+    let winner_stake = new_market.get_staker_stake(&new_call_id, &ctx.winner, &1u32);
+    assert_eq!(winner_stake, 2_500_000);
+
+    // Bonus (25_000) is transferred from old market to new market as protocol
+    // contribution; the contract balance exceeds just the user's stake.
+    let market_balance = TokenClient::new(&ctx.env, &ctx.token).balance(&new_market_addr);
+    assert!(market_balance >= 2_525_000);
+}
+
+#[test]
+fn rollover_different_condition() {
+    let ctx = match setup_rollover_env() {
+        Some(c) => c,
+        None => {
+            std::println!("SKIP: compile WASM first");
+            return;
+        }
+    };
+
+    let rollover_config = RolloverConfig {
+        new_condition: ConditionType::TargetBelow(95_000_000),
+        new_duration_secs: 7200,
+        rollover_percentage_bps: 7500,
+    };
+
+    let new_call_id = ctx.market.claim_and_rollover(
+        &ctx.winner,
+        &ctx.call_id,
+        &rollover_config,
+    );
+
+    let factory = MockFactoryClient::new(&ctx.env, &ctx.factory_id);
+    let new_market = PredictionMarketClient::new(
+        &ctx.env,
+        &factory.get_market(&new_call_id),
+    );
+
+    let call = new_market.get_call(&new_call_id);
+    assert_eq!(call.condition, ConditionType::TargetBelow(95_000_000));
+    assert_eq!(call.end_ts - call.created_at, 7200);
+    assert_eq!(call.parent_call_id, Some(ctx.call_id));
 }

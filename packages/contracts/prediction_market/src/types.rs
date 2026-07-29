@@ -26,6 +26,25 @@ pub struct MarketInitArgs {
     pub outcome_count: u32,
 }
 
+/// The user specifies how they want to roll over their winnings.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RolloverConfig {
+    pub new_condition: ConditionType,
+    pub new_duration_secs: u64,
+    pub rollover_percentage_bps: u32,
+}
+
+/// Represents one step in a rollover chain for the `get_rollover_chain` view.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RolloverLink {
+    pub call_id: u64,
+    pub condition: ConditionType,
+    pub rolled_amount: i128,
+    pub timestamp: u64,
+}
+
 /// Mirrors `call_registry::Call` so `outcome_manager` can deserialize cross-contract.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -51,6 +70,10 @@ pub struct Call {
     pub cancelled: bool,
     pub metadata_version: u32,
     pub share_tokens: Map<u32, Address>,
+    /// Rollover chain: the call_id this market was rolled over from, if any.
+    pub parent_call_id: Option<u64>,
+    /// The amount that was rolled into this market from its parent.
+    pub rolled_amount: i128,
 }
 
 /// Per-market configuration set at deploy time.

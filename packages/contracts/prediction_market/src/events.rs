@@ -172,3 +172,27 @@ pub fn emit_limit_order_expired_refunded(
         ),
     );
 }
+
+/// A winning staker rolled over part of their payout into a new prediction market.
+/// `amount_rolled` is what went into the new market (before bonus).
+/// `amount_paid_out` is what was paid out to the user in tokens.
+/// The bonus (1% of `amount_rolled`) is included in the stake on the new market.
+pub fn emit_payout_rolled_over(
+    env: &Env,
+    user: &Address,
+    from_call_id: u64,
+    to_call_id: u64,
+    amount_rolled: i128,
+    amount_paid_out: i128,
+) {
+    env.events().publish(
+        ("prediction_market", "payout_rolled_over"),
+        (
+            from_call_id,
+            to_call_id,
+            user.clone(),
+            amount_rolled,
+            amount_paid_out,
+        ),
+    );
+}

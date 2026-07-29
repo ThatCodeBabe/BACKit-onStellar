@@ -1,4 +1,4 @@
-use crate::types::{Call, LimitOrder, MarketConfig};
+use crate::types::{Call, LimitOrder, MarketConfig, RolloverLink};
 use soroban_sdk::{contracttype, Address, Env, Vec};
 
 // #465: Limit orders can live up to 7 days (`MAX_ORDER_TTL_SECS` in lib.rs).
@@ -23,6 +23,10 @@ pub enum DataKey {
     NextOrderId,
     OpenOrdersByCall(u64),
     UserOrderIds(Address),
+    // Rollover chain.
+    RolloverChain(u64),
+    UserClaimed(u64, Address),
+    NextRolloverId,
 }
 
 pub fn set_config(env: &Env, config: &MarketConfig) {
@@ -219,4 +223,38 @@ pub fn set_user_order_ids(env: &Env, user: &Address, ids: &Vec<u64>) {
         ORDER_PERSISTENT_LIFETIME_THRESHOLD,
         ORDER_PERSISTENT_BUMP_AMOUNT,
     );
+}
+
+// ─── Rollover ──────────────────────────────────────────────────────────────
+
+/// Get the rollover chain for a call — the ancestry of rolled-over markets
+/// that led to this one, with the earliest ancestor first.
+pub fn get_rollover_chain(env: &Env, call_id: u64) -> Vec<RolloverLink> {
+    let key = DataKey::RolloverChain(call_id);
+    env.storage()
+        .instance()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Store the complete rollover chain for a child market.
+pub fn set_rollover_chain(env: &Env, child_call_id: u64, chain: &Vec<RolloverLink>) {
+    let key = DataKey::RolloverChain(child_call_id);
+    env.storage().instance().set(&key, chain);
+}
+
+/// Mark a user as having claimed their payout (including via rollover).
+/// This prevents double-claiming through the prediction_market contract.
+pub fn set_user_claimed(env: &Env, call_id: u64, user: &Address) {
+    env.storage()
+        .instance()
+        .set(&DataKey::UserClaimed(call_id, user.clone()), &true);
+}
+
+/// Check whether a user has already claimed their payout.
+pub fn get_user_claimed(env: &Env, call_id: u64, user: &Address) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::UserClaimed(call_id, user.clone()))
+        .unwrap_or(false)
 }

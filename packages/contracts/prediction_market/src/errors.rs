@@ -33,4 +33,12 @@ pub enum MarketError {
     InvalidOrderTTL = 23,
     /// #465: the order has not yet expired, so it cannot be force-refunded.
     OrderNotExpired = 24,
+    /// Rollover percentage exceeds 100% (10_000 bps).
+    InvalidRolloverPercentage = 25,
+    /// User has no stake on the winning outcome.
+    NoWinningStake = 26,
+    /// Rollover amount is below the minimum stake for the new market.
+    RolloverInsufficientAmount = 27,
+    /// The call has not been settled yet.
+    CallNotSettled = 28,
 }

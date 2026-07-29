@@ -60,4 +60,6 @@ pub struct Call {
     pub cancelled: bool,
     pub metadata_version: u32,
     pub share_tokens: Map<u32, Address>,
+    pub parent_call_id: Option<u64>,
+    pub rolled_amount: i128,
 }
