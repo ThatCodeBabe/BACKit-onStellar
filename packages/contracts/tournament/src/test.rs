@@ -109,10 +109,7 @@ impl TestEnv {
         });
     }
 
-    fn get_tournament(
-        &self,
-        tournament_id: u64,
-    ) -> Option<crate::types::Tournament> {
+    fn get_tournament(&self, tournament_id: u64) -> Option<crate::types::Tournament> {
         self.env.as_contract(&self.contract_id, || {
             TournamentContract::get_tournament(self.env.clone(), tournament_id)
         })
@@ -180,7 +177,14 @@ fn test_create_tournament() {
 fn test_create_tournament_invalid_time() {
     let te = TestEnv::new();
     let now = te.env.ledger().timestamp();
-    te.create_tournament("Bad", now + 1000, now + 500, 1_000_000, &default_weights(), 3);
+    te.create_tournament(
+        "Bad",
+        now + 1000,
+        now + 500,
+        1_000_000,
+        &default_weights(),
+        3,
+    );
 }
 
 #[test]
@@ -194,7 +198,14 @@ fn test_create_tournament_invalid_weights() {
         uniqueness_weight_bps: 1000,
         accuracy_weight_bps: 1000,
     };
-    te.create_tournament("Bad Weights", now + 100, now + 1000, 1_000_000, &bad_weights, 3);
+    te.create_tournament(
+        "Bad Weights",
+        now + 100,
+        now + 1000,
+        1_000_000,
+        &bad_weights,
+        3,
+    );
 }
 
 #[test]
@@ -332,10 +343,24 @@ fn test_get_tournament_count() {
 
     assert_eq!(te.get_tournament_count(), 0);
 
-    te.create_tournament("T1", now + 100, now + 1000, 1_000_000, &default_weights(), 3);
+    te.create_tournament(
+        "T1",
+        now + 100,
+        now + 1000,
+        1_000_000,
+        &default_weights(),
+        3,
+    );
     assert_eq!(te.get_tournament_count(), 1);
 
-    te.create_tournament("T2", now + 200, now + 2000, 2_000_000, &default_weights(), 5);
+    te.create_tournament(
+        "T2",
+        now + 200,
+        now + 2000,
+        2_000_000,
+        &default_weights(),
+        5,
+    );
     assert_eq!(te.get_tournament_count(), 2);
 }
 

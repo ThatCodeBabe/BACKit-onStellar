@@ -53,7 +53,7 @@ impl LaunchpadContract {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{Env, testutils::Address as _};
+    use soroban_sdk::{testutils::Address as _, Env};
 
     #[test]
     fn test_launchpad_estimate() {
