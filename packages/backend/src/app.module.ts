@@ -29,6 +29,7 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { LoggerModule } from './common/logger/logger.module';
 import { AlertsModule } from './alerts/alerts.module';
 import { StakesModule } from './stakes/stakes.module';
+import { EventStoreModule } from './event-store/event-store.module';
 
 @Module({
   imports: [
@@ -73,6 +74,7 @@ import { StakesModule } from './stakes/stakes.module';
     CommentsModule,
     AlertsModule,
     StakesModule,
+    EventStoreModule,
   ],
   controllers: [],
   providers: [{ provide: APP_INTERCEPTOR, useClass: LoggingInterceptor }],
