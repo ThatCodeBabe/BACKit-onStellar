@@ -61,6 +61,8 @@ impl MockRegistry {
             cancelled: false,
             metadata_version: 0,
             share_tokens: Map::new(env),
+            parent_call_id: None,
+            rolled_amount: 0,
         }
     }
 
@@ -270,6 +272,8 @@ fn prepare_mock_payout(
         cancelled: false,
         metadata_version: 0,
         share_tokens: Map::new(env),
+        parent_call_id: None,
+        rolled_amount: 0,
     };
 
     mock_client.set_mock_call(&call_id, &call);
@@ -326,6 +330,8 @@ fn prepare_mock_batch_payout(
         cancelled: false,
         metadata_version: 0,
         share_tokens: Map::new(env),
+        parent_call_id: None,
+        rolled_amount: 0,
     };
 
     mock_client.set_mock_call(&call_id, &call);
