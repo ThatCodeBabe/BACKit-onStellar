@@ -10,19 +10,21 @@ mod events;
 mod storage;
 mod types;
 
-pub use types::{Call, ConditionType, LimitOrder, MarketConfig, MarketInitArgs};
+pub use types::{
+    Call, ConditionType, LimitOrder, MarketConfig, MarketInitArgs, RolloverConfig, RolloverLink,
+};
 
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{contract, contractimpl, token, Address, Env, Map, Vec};
+use soroban_sdk::{contract, contractimpl, token, Address, Env, IntoVal, Map, Symbol, Val, Vec};
 use storage::*;
 
 use errors::MarketError;
 use events::{
     emit_call_created, emit_call_resolved, emit_limit_order_cancelled, emit_limit_order_created,
     emit_limit_order_expired_refunded, emit_limit_order_filled, emit_market_initialized,
-    emit_reserve_discrepancy, emit_reserve_verification, emit_stake_added,
+    emit_payout_rolled_over, emit_reserve_discrepancy, emit_reserve_verification, emit_stake_added,
 };
 use types::ReserveVerification;
 
@@ -402,6 +404,8 @@ impl PredictionMarket {
             cancelled: false,
             metadata_version: 0,
             share_tokens: Map::new(&env),
+            parent_call_id: None,
+            rolled_amount: 0,
         };
 
         set_call(&env, &call);
@@ -959,5 +963,329 @@ impl PredictionMarket {
             is_fully_reserved: discrepancy == 0,
             discrepancy,
         })
+    }
+
+    // ─── Rollover ──────────────────────────────────────────────────────────
+
+    /// Store the parent call linkage on a market (called during rollover).
+    /// Only settable once — panics if `parent_call_id` is already `Some`.
+    pub fn set_parent_call(
+        env: Env,
+        call_id: u64,
+        parent_call_id: u64,
+        rolled_amount: i128,
+    ) -> Result<(), MarketError> {
+        let config = get_config(&env).ok_or(MarketError::NotInitialized)?;
+        require_call_id(&config, call_id)?;
+
+        let mut call = get_call(&env).ok_or(MarketError::CallNotFound)?;
+        if call.parent_call_id.is_some() {
+            return Err(MarketError::Unauthorized);
+        }
+        call.parent_call_id = Some(parent_call_id);
+        call.rolled_amount = rolled_amount;
+        set_call(&env, &call);
+        Ok(())
+    }
+
+    /// Atomically claim payout and roll over into a new prediction market.
+    ///
+    /// 1. Validates the user's winning stake and call settlement.
+    /// 2. Calls `outcome_manager.claim_payout` to release the full payout to
+    ///    the user (which also marks the claim in the outcome manager).
+    /// 3. Deploys a new market via the factory.
+    /// 4. Stakes `rollover_amount` on the new market on outcome 1 (the user
+    ///    pays for this out of their received payout).
+    /// 5. Transfers a 1% bonus (of `rollover_amount`) from this contract to
+    ///    the new market as protocol-funded incentive.
+    /// 6. Stores rollover chain ancestry on the new market.
+    ///
+    /// Returns the new market's `call_id`.
+    pub fn claim_and_rollover(
+        env: Env,
+        user: Address,
+        call_id: u64,
+        rollover_config: RolloverConfig,
+    ) -> Result<u64, MarketError> {
+        user.require_auth();
+
+        let config = get_config(&env).ok_or(MarketError::NotInitialized)?;
+        require_call_id(&config, call_id)?;
+        let call = get_call(&env).ok_or(MarketError::CallNotFound)?;
+
+        // Validate call is settled and user has winning stake
+        if !call.settled || call.outcome == 0 {
+            return Err(MarketError::CallNotSettled);
+        }
+        if call.voided || call.cancelled {
+            return Err(MarketError::Unauthorized);
+        }
+
+        let winning_outcome = call.outcome;
+        let outcome_stakers = call
+            .stakes
+            .get(winning_outcome)
+            .unwrap_or_else(|| Map::new(&env));
+        let user_winning_stake = outcome_stakers.get(user.clone()).unwrap_or(0);
+        if user_winning_stake <= 0 {
+            return Err(MarketError::NoWinningStake);
+        }
+
+        if rollover_config.rollover_percentage_bps > 10_000 {
+            return Err(MarketError::InvalidRolloverPercentage);
+        }
+
+        if get_user_claimed(&env, call_id, &user) {
+            return Err(MarketError::CallSettled);
+        }
+
+        // Compute payout (simple pool math, no fee deduction — the fee is
+        // handled by outcome_manager's separate `claim_payout` call).
+        let total_stake = total_call_stake(&call).ok_or(MarketError::Overflow)?;
+        let total_winning = call.outcome_stakes.get(winning_outcome).unwrap_or(0);
+        let total_losing = total_stake
+            .checked_sub(total_winning)
+            .ok_or(MarketError::Overflow)?;
+
+        // Query fee config from outcome_manager and compute after-fee payout.
+        let outcome_manager = config.outcome_manager.clone();
+        let empty_args: Vec<Val> = Vec::new(&env);
+        let (fee_bps, fee_collector): (u32, Address) = env.invoke_contract(
+            &outcome_manager,
+            &Symbol::new(&env, "fee_config"),
+            empty_args,
+        );
+        let total_fee = total_losing
+            .checked_mul(fee_bps as i128)
+            .ok_or(MarketError::Overflow)?
+            .checked_div(10000)
+            .ok_or(MarketError::Overflow)?;
+        let net_losing = total_losing
+            .checked_sub(total_fee)
+            .ok_or(MarketError::Overflow)?;
+
+        let staker_fee_share = if total_winning > 0 {
+            user_winning_stake
+                .checked_mul(total_fee)
+                .ok_or(MarketError::Overflow)?
+                .checked_div(total_winning)
+                .ok_or(MarketError::Overflow)?
+        } else {
+            0
+        };
+
+        let payout_after_fee = if total_losing > 0 && total_winning > 0 {
+            let prize_share = user_winning_stake
+                .checked_mul(net_losing)
+                .ok_or(MarketError::Overflow)?
+                .checked_div(total_winning)
+                .ok_or(MarketError::Overflow)?;
+            user_winning_stake
+                .checked_add(prize_share)
+                .ok_or(MarketError::Overflow)?
+        } else {
+            user_winning_stake
+        };
+
+        // Split payout into rollover and payout portions
+        let rollover_amount = payout_after_fee
+            .checked_mul(rollover_config.rollover_percentage_bps as i128)
+            .ok_or(MarketError::Overflow)?
+            .checked_div(10_000)
+            .ok_or(MarketError::Overflow)?;
+        let payout_amount = payout_after_fee
+            .checked_sub(rollover_amount)
+            .ok_or(MarketError::Overflow)?;
+        let bonus = rollover_amount
+            .checked_div(100)
+            .ok_or(MarketError::Overflow)?;
+        let total_new_stake = rollover_amount
+            .checked_add(bonus)
+            .ok_or(MarketError::Overflow)?;
+
+        if total_new_stake < config.min_stake {
+            return Err(MarketError::RolloverInsufficientAmount);
+        }
+
+        // Build MarketInitArgs for the new market
+        let current_timestamp = env.ledger().timestamp();
+        let end_price = call.end_price;
+        let new_end_ts = current_timestamp
+            .checked_add(rollover_config.new_duration_secs)
+            .ok_or(MarketError::Overflow)?;
+
+        let new_args = MarketInitArgs {
+            stake_token: call.stake_token.clone(),
+            stake_amount: total_new_stake,
+            start_price: end_price,
+            end_ts: new_end_ts,
+            token_address: call.token_address.clone(),
+            pair_id: call.pair_id.clone(),
+            metadata_hash: call.metadata_hash.clone(),
+            condition: rollover_config.new_condition,
+            outcome_count: call.outcome_count,
+        };
+
+        // Deploy the new market
+        let factory_addr = config.factory.clone();
+        let deploy_args = (user.clone(), new_args).into_val(&env);
+        let new_market_addr: Address = env.invoke_contract(
+            &factory_addr,
+            &Symbol::new(&env, "deploy_market"),
+            deploy_args,
+        );
+
+        let new_call_id: u64 = {
+            let args: Vec<Val> = Vec::new(&env);
+            env.invoke_contract(
+                &new_market_addr,
+                &Symbol::new(&env, "get_call_id"),
+                args,
+            )
+        };
+
+        // Transfer fee share + payout directly (avoids re-entrant call back
+        // from outcome_manager.claim_payout → market.release_escrow).
+        let market_addr = env.current_contract_address();
+        if staker_fee_share > 0 {
+            transfer_token(&env, &call.stake_token, &market_addr, &fee_collector, staker_fee_share);
+        }
+        transfer_token(&env, &call.stake_token, &market_addr, &user, payout_after_fee);
+
+        // Call outcome_manager.claim_payout_no_release to record the
+        // claim (no release_escrow call → no re-entry).
+        let claim_args = (
+            call_id,
+            user.clone(),
+            user_winning_stake,
+            total_winning,
+            total_losing,
+        )
+            .into_val(&env);
+        env.invoke_contract::<()>(
+            &outcome_manager,
+            &Symbol::new(&env, "claim_payout_no_release"),
+            claim_args,
+        );
+
+        set_user_claimed(&env, call_id, &user);
+
+        // Stake rollover amount on the new market (transfers from user to new
+        // market, user already authed via the entry-point signature).
+        if rollover_amount > 0 {
+            let stake_args = (
+                user.clone(),
+                new_call_id,
+                rollover_amount,
+                1u32,
+            )
+                .into_val(&env);
+            env.invoke_contract::<()>(
+                &new_market_addr,
+                &Symbol::new(&env, "stake_on_call"),
+                stake_args,
+            );
+        }
+
+        // Transfer the protocol-funded 1% bonus from this contract to the new
+        // market (the bonus tokens increase the new market's total pool).
+        if bonus > 0 {
+            transfer_token(
+                &env,
+                &call.stake_token,
+                &env.current_contract_address(),
+                &new_market_addr,
+                bonus,
+            );
+        }
+
+        // Store rollover chain ancestry on the new market
+        let mut chain: Vec<RolloverLink> = Vec::new(&env);
+        chain.push_back(RolloverLink {
+            call_id,
+            condition: call.condition.clone(),
+            rolled_amount: rollover_amount,
+            timestamp: current_timestamp,
+        });
+        let chain_args = (new_call_id, chain).into_val(&env);
+        env.invoke_contract::<()>(
+            &new_market_addr,
+            &Symbol::new(&env, "store_rollover_chain"),
+            chain_args,
+        );
+
+        // Set parent call linkage on the new market
+        let parent_args = (new_call_id, call_id, rollover_amount).into_val(&env);
+        env.invoke_contract::<()>(
+            &new_market_addr,
+            &Symbol::new(&env, "set_parent_call"),
+            parent_args,
+        );
+
+        emit_payout_rolled_over(
+            &env,
+            &user,
+            call_id,
+            new_call_id,
+            rollover_amount,
+            payout_amount,
+        );
+
+        Ok(new_call_id)
+    }
+
+    /// Return the rollover ancestry chain for this market, with the earliest
+    /// ancestor first.
+    pub fn get_rollover_chain(
+        env: Env,
+        call_id: u64,
+    ) -> Result<Vec<RolloverLink>, MarketError> {
+        let config = get_config(&env).ok_or(MarketError::NotInitialized)?;
+        require_call_id(&config, call_id)?;
+        Ok(storage::get_rollover_chain(&env, call_id))
+    }
+
+    /// Public view: check whether a user has already claimed via rollover.
+    pub fn get_user_claimed_state(
+        env: Env,
+        call_id: u64,
+        user: Address,
+    ) -> Result<bool, MarketError> {
+        let config = get_config(&env).ok_or(MarketError::NotInitialized)?;
+        require_call_id(&config, call_id)?;
+        Ok(storage::get_user_claimed(&env, call_id, &user))
+    }
+
+    /// Store a rollover chain on this market (called by the parent market
+    /// during rollover).  Only settable once — rejected if chain is non-empty.
+    pub fn store_rollover_chain(
+        env: Env,
+        call_id: u64,
+        chain: Vec<RolloverLink>,
+    ) -> Result<(), MarketError> {
+        let config = get_config(&env).ok_or(MarketError::NotInitialized)?;
+        require_call_id(&config, call_id)?;
+
+        let existing = storage::get_rollover_chain(&env, call_id);
+        if existing.len() > 0 {
+            return Err(MarketError::Unauthorized);
+        }
+        storage::set_rollover_chain(&env, call_id, &chain);
+        Ok(())
+    }
+
+    /// Return the parent call id and rolled amount, if this market was created
+    /// via a rollover.
+    pub fn get_parent_call(
+        env: Env,
+        call_id: u64,
+    ) -> Result<Option<(u64, i128)>, MarketError> {
+        let config = get_config(&env).ok_or(MarketError::NotInitialized)?;
+        require_call_id(&config, call_id)?;
+        let call = get_call(&env).ok_or(MarketError::CallNotFound)?;
+        match call.parent_call_id {
+            Some(pid) => Ok(Some((pid, call.rolled_amount))),
+            None => Ok(None),
+        }
     }
 }
