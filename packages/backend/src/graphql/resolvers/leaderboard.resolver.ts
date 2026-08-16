@@ -1,4 +1,4 @@
-import { Resolver, Query, Args, Int, ObjectType, Field, Float } from '@nestjs/graphql';
+import { Resolver, Query, Args, Int, ObjectType, Field } from '@nestjs/graphql';
 import { LeaderboardService } from '../../leaderboard/leaderboard.service';
 import { LeaderboardType } from '../types/leaderboard.type';
 import { PaginationInput } from '../types/pagination.type';

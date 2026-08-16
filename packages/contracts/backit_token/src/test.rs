@@ -63,7 +63,7 @@ fn setup_initialized(
 
     // Mint some USDC to the admin so fee_pool_deposit can pull from it
     let usdc_sac = StellarAssetClient::new(env, &usdc_id);
-    usdc_sac.mint(&admin, &10_000_000_i128);
+    usdc_sac.mint(&admin, &10_000_000_0000000_i128);
 
     let _ = usdc_admin; // silence unused warning
     (

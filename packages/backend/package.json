@@ -34,6 +34,7 @@
     "@nestjs/config": "^4.0.2",
     "@nestjs/core": "^11.0.1",
     "@nestjs/event-emitter": "^3.0.0",
+    "@as-integrations/express5": "^1.1.2",
     "@nestjs/graphql": "^13.0.0",
     "@nestjs/jwt": "^11.0.2",
     "@nestjs/platform-express": "^11.0.1",
