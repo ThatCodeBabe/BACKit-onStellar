@@ -5,53 +5,61 @@ import {
 } from 'graphql-query-complexity';
 import { GraphQLSchema, DocumentNode } from 'graphql';
 import { Logger } from '@nestjs/common';
+import { ApolloServerPlugin, GraphQLRequestListener } from '@apollo/server';
 
 /** Maximum query complexity units allowed per request. */
 export const MAX_COMPLEXITY = 200;
 
-/** Default cost per field if no explicit `complexity` option is set. */
+/** Default cost per field when no explicit `complexity` option is set. */
 export const DEFAULT_FIELD_COST = 1;
 
 /**
- * Calculates the complexity of an incoming GraphQL query and throws when it
- * exceeds `MAX_COMPLEXITY`.
+ * Returns an Apollo Server 4 plugin that rejects requests whose complexity
+ * exceeds MAX_COMPLEXITY.
  *
- * Plugged into `ApolloDriver` via the `plugins` array in `GraphqlModule`.
+ * Pass the compiled GraphQLSchema (available after schema generation) so the
+ * complexity estimator can introspect field definitions.
+ *
+ * Usage in GraphQLModule.forRoot():
+ *   plugins: [buildComplexityPlugin(schema)]
+ *
+ * Because the schema isn't available at module definition time in NestJS
+ * code-first mode, this plugin is wired up via the `plugins` array inside a
+ * factory function that receives the schema once it is ready.
  */
-export function buildComplexityPlugin(schema: GraphQLSchema) {
+export function buildComplexityPlugin(
+  schema: GraphQLSchema,
+): ApolloServerPlugin {
   const logger = new Logger('GraphQL:Complexity');
 
   return {
-    requestDidStart: () => ({
-      didResolveOperation({
-        request,
-        document,
-      }: {
-        request: { variables?: Record<string, unknown> };
-        document: DocumentNode;
-      }) {
-        const complexity = getComplexity({
-          schema,
-          operationName: undefined,
-          query: document,
-          variables: request.variables,
-          estimators: [
-            // Honour explicit `complexity` options on field definitions first
-            fieldExtensionsEstimator(),
-            // Fall back to 1 per field
-            simpleEstimator({ defaultComplexity: DEFAULT_FIELD_COST }),
-          ],
-        });
+    async requestDidStart(): Promise<GraphQLRequestListener<object>> {
+      return {
+        async didResolveOperation({ request, document }) {
+          const complexity = getComplexity({
+            schema,
+            operationName: request.operationName ?? undefined,
+            query: document as DocumentNode,
+            variables: request.variables as Record<string, unknown> | undefined,
+            estimators: [
+              // Honour explicit `complexity` options set on resolver fields
+              fieldExtensionsEstimator(),
+              // Fall back to DEFAULT_FIELD_COST per field
+              simpleEstimator({ defaultComplexity: DEFAULT_FIELD_COST }),
+            ],
+          });
 
-        logger.debug(`Query complexity: ${complexity}`);
+          logger.debug(`Query complexity: ${complexity}`);
 
-        if (complexity > MAX_COMPLEXITY) {
-          throw new Error(
-            `Query complexity of ${complexity} exceeds the maximum allowed complexity of ${MAX_COMPLEXITY}. ` +
-              'Please simplify your query by requesting fewer fields or splitting it into multiple requests.',
-          );
-        }
-      },
-    }),
+          if (complexity > MAX_COMPLEXITY) {
+            throw new Error(
+              `Query complexity ${complexity} exceeds the allowed maximum of ` +
+                `${MAX_COMPLEXITY}. Simplify your query or split it into ` +
+                `multiple requests.`,
+            );
+          }
+        },
+      };
+    },
   };
 }

@@ -14,19 +14,17 @@ import { SearchResolver } from './resolvers/search.resolver';
 // ── DataLoader ───────────────────────────────────────────────────────────────
 import { DataLoaderService } from './dataloader/dataloader.service';
 
-// ── Complexity plugin ────────────────────────────────────────────────────────
-import { buildComplexityPlugin, MAX_COMPLEXITY } from './complexity.config';
-
-// ── Existing service modules ─────────────────────────────────────────────────
+// ── Existing feature modules that export their services ──────────────────────
 import { CallsModule } from '../calls/calls.module';
 import { UsersModule } from '../user/users.module';
 import { BookmarksModule } from '../bookmarks/bookmarks.module';
 import { LeaderboardModule } from '../leaderboard/leaderboard.module';
-import { SearchModule } from '../search/search.module';
 import { AuthModule } from '../auth/auth.module';
-import { StakesModule } from '../stakes/stakes.module';
 
-// ── Entities needed by DataLoaderService repositories ────────────────────────
+// ── Services not exported by their modules (declared directly here) ──────────
+import { SearchService } from '../search/search.service';
+
+// ── Entities needed by DataLoaderService ─────────────────────────────────────
 import { Users } from '../user/entities/users.entity';
 import { Stake } from '../stakes/entities/stake.entity';
 
@@ -40,58 +38,45 @@ import { Stake } from '../stakes/entities/stake.entity';
       autoSchemaFile: join(process.cwd(), 'src/schema.gql'),
       sortSchema: true,
 
-      // Enable Apollo Sandbox in development; disable introspection in prod
+      // Apollo Sandbox available in non-production; introspection follows suit
       playground: false,
       introspection: process.env.NODE_ENV !== 'production',
 
-      // Expose the raw Express request on the GQL context so guards can
-      // access the Authorization header and attach `req.user`.
+      // Expose the raw Express request on the GQL context so guards/decorators
+      // can read the Authorization header and attach req.user.
       context: ({ req }: { req: unknown }) => ({ req }),
 
-      // Inject per-request DataLoaderService into the GraphQL context
-      // so every field resolver can access it via @Context().
-      plugins: [
-        {
-          async serverWillStart() {
-            return {
-              async schemaDidLoadOrUpdate({ apiSchema }) {
-                // Attach complexity plugin once schema is available
-                const complexityPlugin = buildComplexityPlugin(apiSchema);
-                return complexityPlugin;
-              },
-            };
-          },
-        },
-      ],
-
-      // Complexity config used in Apollo plugin
       buildSchemaOptions: {
         numberScalarMode: 'integer',
       },
     }),
 
-    // ── Existing feature modules (their services are injected into resolvers) ──
+    // ── Feature modules that export their services ───────────────────────────
     CallsModule,
     UsersModule,
     BookmarksModule,
     LeaderboardModule,
-    SearchModule,
+    // AuthModule is @Global(), so AuthService is available everywhere already.
+    // Listing it explicitly here is safe and makes the dependency clear.
     AuthModule,
-    StakesModule,
 
-    // ── Entity repositories used by DataLoaderService ────────────────────────
+    // ── Repositories used by REQUEST-scoped DataLoaderService ────────────────
     TypeOrmModule.forFeature([Users, Stake]),
   ],
 
   providers: [
-    // Resolvers
+    // ── Resolvers ─────────────────────────────────────────────────────────────
     CallsResolver,
     UsersResolver,
     FeedResolver,
     LeaderboardResolver,
     SearchResolver,
 
-    // REQUEST-scoped DataLoader factory
+    // ── SearchService: declared here because SearchModule doesn't export it ──
+    // DataSource is provided globally by TypeOrmModule.forRoot in AppModule.
+    SearchService,
+
+    // ── REQUEST-scoped DataLoader factory ─────────────────────────────────────
     DataLoaderService,
   ],
 
