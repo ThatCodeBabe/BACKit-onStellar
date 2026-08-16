@@ -30,6 +30,7 @@ import { LoggerModule } from './common/logger/logger.module';
 import { AlertsModule } from './alerts/alerts.module';
 import { StakesModule } from './stakes/stakes.module';
 import { EventStoreModule } from './event-store/event-store.module';
+import { GraphqlModule } from './graphql/graphql.module';
 
 @Module({
   imports: [
@@ -75,6 +76,7 @@ import { EventStoreModule } from './event-store/event-store.module';
     AlertsModule,
     StakesModule,
     EventStoreModule,
+    GraphqlModule,
   ],
   controllers: [],
   providers: [{ provide: APP_INTERCEPTOR, useClass: LoggingInterceptor }],
