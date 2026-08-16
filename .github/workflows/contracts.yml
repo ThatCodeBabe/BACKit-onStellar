@@ -77,14 +77,19 @@ jobs:
           sudo mv stellar /usr/local/bin/
           stellar --version
 
-      - name: Build prediction_market WASM for factory tests
+      - name: Build contract WASMs needed by integration tests
         run: |
           cd packages/contracts
           rm -f target/wasm32-unknown-unknown/release/prediction_market*.wasm
+          rm -f target/wasm32-unknown-unknown/release/outcome_manager*.wasm
           rm -f target/wasm32v1-none/release/prediction_market*.wasm
+          rm -f target/wasm32v1-none/release/outcome_manager*.wasm
           cd prediction_market
           stellar contract build
+          cd ../outcome_manager
+          stellar contract build
           ls -la ../target/wasm32v1-none/release/prediction_market*.wasm
+          ls -la ../target/wasm32v1-none/release/outcome_manager*.wasm
 
       - name: Run Cargo Test (debug, x86_64)
         run: |
