@@ -7,13 +7,13 @@ use crate::{
     types::{ConditionType, MarketInitArgs, RolloverConfig},
     PredictionMarket, PredictionMarketClient,
 };
+use rand::RngCore;
 use soroban_sdk::{
     contract, contractimpl, contracttype,
     testutils::{Address as _, Ledger as _},
     token::{Client as TokenClient, StellarAssetClient},
     vec, Address, Bytes, BytesN, Env, IntoVal, Symbol, Val, Vec,
 };
-use rand::RngCore;
 
 fn setup_token(env: &Env, admin: &Address) -> Address {
     let token = env.register_stellar_asset_contract_v2(admin.clone());
@@ -170,14 +170,25 @@ fn limit_order_created_escrows_tokens_and_is_listed() {
     let orderer = Address::generate(&env);
     let token = setup_token(&env, &admin);
 
-    let market_id = setup_market(&env, &creator, &outcome_manager, &factory, &token, 1, 1, 0, 2);
+    let market_id = setup_market(
+        &env,
+        &creator,
+        &outcome_manager,
+        &factory,
+        &token,
+        1,
+        1,
+        0,
+        2,
+    );
     let market = PredictionMarketClient::new(&env, &market_id);
     let token_client = TokenClient::new(&env, &token);
 
     token_client.transfer(&admin, &orderer, &5_000);
     assert_eq!(token_client.balance(&orderer), 5_000);
 
-    let order_id = market.create_limit_order(&orderer, &1u64, &1u32, &2_000i128, &3_000u32, &3600u64);
+    let order_id =
+        market.create_limit_order(&orderer, &1u64, &1u32, &2_000i128, &3_000u32, &3600u64);
     assert_eq!(order_id, 1);
 
     // Escrow transferred out of the orderer's wallet into the contract.
@@ -211,16 +222,28 @@ fn limit_order_rejects_invalid_target_and_ttl() {
     let orderer = Address::generate(&env);
     let token = setup_token(&env, &admin);
 
-    let market_id = setup_market(&env, &creator, &outcome_manager, &factory, &token, 1, 1, 0, 2);
+    let market_id = setup_market(
+        &env,
+        &creator,
+        &outcome_manager,
+        &factory,
+        &token,
+        1,
+        1,
+        0,
+        2,
+    );
     let market = PredictionMarketClient::new(&env, &market_id);
     TokenClient::new(&env, &token).transfer(&admin, &orderer, &10_000);
 
     // target_implied_probability_bps > 10_000 is invalid.
-    let result = market.try_create_limit_order(&orderer, &1u64, &1u32, &1_000i128, &10_001u32, &3600u64);
+    let result =
+        market.try_create_limit_order(&orderer, &1u64, &1u32, &1_000i128, &10_001u32, &3600u64);
     assert_eq!(result, Err(Ok(MarketError::InvalidTargetProbability)));
 
     // ttl_secs == 0 is invalid.
-    let result = market.try_create_limit_order(&orderer, &1u64, &1u32, &1_000i128, &3_000u32, &0u64);
+    let result =
+        market.try_create_limit_order(&orderer, &1u64, &1u32, &1_000i128, &3_000u32, &0u64);
     assert_eq!(result, Err(Ok(MarketError::InvalidOrderTTL)));
 
     // ttl_secs beyond MAX_ORDER_TTL_SECS (7 days) is invalid.
@@ -262,7 +285,17 @@ fn limit_order_fills_when_target_probability_reached() {
     let orderer = Address::generate(&env);
     let token = setup_token(&env, &admin);
 
-    let market_id = setup_market(&env, &creator, &outcome_manager, &factory, &token, 1, 1, 0, 2);
+    let market_id = setup_market(
+        &env,
+        &creator,
+        &outcome_manager,
+        &factory,
+        &token,
+        1,
+        1,
+        0,
+        2,
+    );
     let market = PredictionMarketClient::new(&env, &market_id);
     let token_client = TokenClient::new(&env, &token);
 
@@ -275,7 +308,8 @@ fn limit_order_fills_when_target_probability_reached() {
 
     // Pool is 3_000 / 7_000 (30% on outcome 1). Order wants <= 20% — must not
     // fill immediately, and creation only escrows, it never matches itself.
-    let order_id = market.create_limit_order(&orderer, &1u64, &1u32, &1_000i128, &2_000u32, &3600u64);
+    let order_id =
+        market.create_limit_order(&orderer, &1u64, &1u32, &1_000i128, &2_000u32, &3600u64);
     assert_eq!(market.get_staker_stake(&1u64, &orderer, &1u32), 0);
     assert_eq!(market.get_open_orders(&1u64).len(), 1);
 
@@ -313,12 +347,23 @@ fn limit_order_cancelled_before_fill_refunds_escrow() {
     let stranger = Address::generate(&env);
     let token = setup_token(&env, &admin);
 
-    let market_id = setup_market(&env, &creator, &outcome_manager, &factory, &token, 1, 1, 0, 2);
+    let market_id = setup_market(
+        &env,
+        &creator,
+        &outcome_manager,
+        &factory,
+        &token,
+        1,
+        1,
+        0,
+        2,
+    );
     let market = PredictionMarketClient::new(&env, &market_id);
     let token_client = TokenClient::new(&env, &token);
     token_client.transfer(&admin, &orderer, &10_000);
 
-    let order_id = market.create_limit_order(&orderer, &1u64, &1u32, &4_000i128, &3_000u32, &3600u64);
+    let order_id =
+        market.create_limit_order(&orderer, &1u64, &1u32, &4_000i128, &3_000u32, &3600u64);
     assert_eq!(token_client.balance(&orderer), 6_000);
 
     // Only the owner may cancel.
@@ -353,7 +398,17 @@ fn limit_order_expired_is_not_matched_and_is_refundable_with_reward() {
     let staker = Address::generate(&env);
     let token = setup_token(&env, &admin);
 
-    let market_id = setup_market(&env, &creator, &outcome_manager, &factory, &token, 1, 1, 0, 2);
+    let market_id = setup_market(
+        &env,
+        &creator,
+        &outcome_manager,
+        &factory,
+        &token,
+        1,
+        1,
+        0,
+        2,
+    );
     let market = PredictionMarketClient::new(&env, &market_id);
     let token_client = TokenClient::new(&env, &token);
     token_client.transfer(&admin, &orderer, &10_000);
@@ -363,7 +418,8 @@ fn limit_order_expired_is_not_matched_and_is_refundable_with_reward() {
     // Target of 10_000 bps (100%) always matches once any stake exists, so
     // if this order is NOT filled after expiry, that proves the matching
     // loop correctly skips expired orders rather than filling them.
-    let order_id = market.create_limit_order(&orderer, &1u64, &1u32, &4_000i128, &10_000u32, &100u64);
+    let order_id =
+        market.create_limit_order(&orderer, &1u64, &1u32, &4_000i128, &10_000u32, &100u64);
 
     // Refunding before expiry must fail.
     let result = market.try_refund_expired_order(&refunder, &order_id);
@@ -408,7 +464,17 @@ fn limit_order_multiple_orders_fill_in_sequence() {
     let order_c = Address::generate(&env);
     let token = setup_token(&env, &admin);
 
-    let market_id = setup_market(&env, &creator, &outcome_manager, &factory, &token, 1, 1, 0, 2);
+    let market_id = setup_market(
+        &env,
+        &creator,
+        &outcome_manager,
+        &factory,
+        &token,
+        1,
+        1,
+        0,
+        2,
+    );
     let market = PredictionMarketClient::new(&env, &market_id);
     let token_client = TokenClient::new(&env, &token);
     for a in [&seed_staker, &pusher, &order_a, &order_b, &order_c] {
@@ -475,7 +541,17 @@ fn limit_order_matching_cap_leaves_excess_orders_open_for_next_stake() {
     let trigger_staker = Address::generate(&env);
     let token = setup_token(&env, &admin);
 
-    let market_id = setup_market(&env, &creator, &outcome_manager, &factory, &token, 1, 1, 0, 2);
+    let market_id = setup_market(
+        &env,
+        &creator,
+        &outcome_manager,
+        &factory,
+        &token,
+        1,
+        1,
+        0,
+        2,
+    );
     let market = PredictionMarketClient::new(&env, &market_id);
     let token_client = TokenClient::new(&env, &token);
     token_client.transfer(&admin, &seed_staker, &1_000_000);
@@ -550,7 +626,17 @@ fn limit_order_over_cap_is_skipped_without_aborting_triggering_stake() {
     let trigger_staker = Address::generate(&env);
     let token = setup_token(&env, &admin);
 
-    let market_id = setup_market(&env, &creator, &outcome_manager, &factory, &token, 1, 1, 500, 2);
+    let market_id = setup_market(
+        &env,
+        &creator,
+        &outcome_manager,
+        &factory,
+        &token,
+        1,
+        1,
+        500,
+        2,
+    );
     let market = PredictionMarketClient::new(&env, &market_id);
     let token_client = TokenClient::new(&env, &token);
     token_client.transfer(&admin, &capped_orderer, &10_000);
@@ -558,8 +644,16 @@ fn limit_order_over_cap_is_skipped_without_aborting_triggering_stake() {
 
     market.stake_on_call(&capped_orderer, &1u64, &400i128, &1u32);
 
-    let order1 = market.create_limit_order(&capped_orderer, &1u64, &1u32, &50i128, &10_000u32, &3600u64);
-    let order2 = market.create_limit_order(&capped_orderer, &1u64, &1u32, &100i128, &10_000u32, &3600u64);
+    let order1 =
+        market.create_limit_order(&capped_orderer, &1u64, &1u32, &50i128, &10_000u32, &3600u64);
+    let order2 = market.create_limit_order(
+        &capped_orderer,
+        &1u64,
+        &1u32,
+        &100i128,
+        &10_000u32,
+        &3600u64,
+    );
     assert_eq!(market.get_open_orders(&1u64).len(), 2);
 
     // Trigger matching. trigger_staker is unrelated to capped_orderer's cap.
@@ -688,13 +782,20 @@ impl MockFactory {
                 ),
             );
 
-        env.storage().instance().set(&MockKey::Market(call_id), &market_addr);
-        env.storage().instance().set(&MockKey::Counter, &(count + 1));
+        env.storage()
+            .instance()
+            .set(&MockKey::Market(call_id), &market_addr);
+        env.storage()
+            .instance()
+            .set(&MockKey::Counter, &(count + 1));
         market_addr
     }
 
     pub fn get_market(env: Env, call_id: u64) -> Address {
-        env.storage().instance().get(&MockKey::Market(call_id)).unwrap()
+        env.storage()
+            .instance()
+            .get(&MockKey::Market(call_id))
+            .unwrap()
     }
 
     pub fn get_market_count(env: Env) -> u64 {
@@ -712,6 +813,8 @@ struct RolloverTestContext<'a> {
     price: i128,
     outcome_mgr_id: Address,
     factory_id: Address,
+    signing_key: ed25519_dalek::SigningKey,
+    oracle_pubkey: BytesN<32>,
 }
 
 fn setup_rollover_env<'a>() -> Option<RolloverTestContext<'a>> {
@@ -828,7 +931,11 @@ fn setup_rollover_env<'a>() -> Option<RolloverTestContext<'a>> {
     let _: Val = env.invoke_contract(
         &outcome_mgr_id,
         &Symbol::new(&env, "mark_settled"),
-        vec![&env, market_id.clone().into_val(&env), call_id.into_val(&env)],
+        vec![
+            &env,
+            market_id.clone().into_val(&env),
+            call_id.into_val(&env),
+        ],
     );
 
     Some(RolloverTestContext {
@@ -841,6 +948,8 @@ fn setup_rollover_env<'a>() -> Option<RolloverTestContext<'a>> {
         price,
         outcome_mgr_id,
         factory_id,
+        signing_key,
+        oracle_pubkey,
     })
 }
 
@@ -864,17 +973,15 @@ fn rollover_partial_50_percent() {
 
     let balance_before = TokenClient::new(&ctx.env, &ctx.token).balance(&ctx.winner);
 
-    let new_call_id = ctx.market.claim_and_rollover(
-        &ctx.winner,
-        &ctx.call_id,
-        &rollover_config,
-    );
+    let new_call_id = ctx
+        .market
+        .claim_and_rollover(&ctx.winner, &ctx.call_id, &rollover_config);
 
     let balance_after = TokenClient::new(&ctx.env, &ctx.token).balance(&ctx.winner);
 
-    // Payout = 2M + 2M * 3M / 2M = 5M. 50% rollover = 2.5M. Bonus = 25K.
-    // User receives 2.5M in wallet.
-    assert_eq!(balance_after - balance_before, 2_500_000);
+    // Payout = 2M + 2M * (3M - 50K) / 2M = 4,950,000.  50% rollover =
+    // 2,475,000.  Bonus = 24,750.  Fee retained in market funds bonus.
+    assert_eq!(balance_after - balance_before, 2_475_000);
 
     let factory = MockFactoryClient::new(&ctx.env, &ctx.factory_id);
     assert_eq!(factory.get_market_count(), 2);
@@ -885,14 +992,14 @@ fn rollover_partial_50_percent() {
     let new_call = new_market.get_call(&new_call_id);
     assert_eq!(new_call.creator, ctx.winner);
     assert_eq!(new_call.parent_call_id, Some(ctx.call_id));
-    assert_eq!(new_call.rolled_amount, 2_500_000);
+    assert_eq!(new_call.rolled_amount, 2_475_000);
 
     let chain = new_market.get_rollover_chain(&new_call_id);
     assert_eq!(chain.len(), 1);
     assert_eq!(chain.get(0).unwrap().call_id, ctx.call_id);
 
     let winner_stake = new_market.get_staker_stake(&new_call_id, &ctx.winner, &1u32);
-    assert_eq!(winner_stake, 2_500_000);
+    assert_eq!(winner_stake, 2_475_000);
 
     assert!(ctx.market.get_user_claimed_state(&ctx.call_id, &ctx.winner));
 }
@@ -915,22 +1022,17 @@ fn rollover_full_100_percent() {
 
     let balance_before = TokenClient::new(&ctx.env, &ctx.token).balance(&ctx.winner);
 
-    let new_call_id = ctx.market.claim_and_rollover(
-        &ctx.winner,
-        &ctx.call_id,
-        &rollover_config,
-    );
+    let new_call_id = ctx
+        .market
+        .claim_and_rollover(&ctx.winner, &ctx.call_id, &rollover_config);
 
     let balance_after = TokenClient::new(&ctx.env, &ctx.token).balance(&ctx.winner);
     assert_eq!(balance_after, balance_before);
 
     let factory = MockFactoryClient::new(&ctx.env, &ctx.factory_id);
-    let new_market = PredictionMarketClient::new(
-        &ctx.env,
-        &factory.get_market(&new_call_id),
-    );
+    let new_market = PredictionMarketClient::new(&ctx.env, &factory.get_market(&new_call_id));
     let winner_stake = new_market.get_staker_stake(&new_call_id, &ctx.winner, &1u32);
-    assert_eq!(winner_stake, 5_000_000);
+    assert_eq!(winner_stake, 4_950_000);
 }
 
 #[test]
@@ -949,11 +1051,9 @@ fn rollover_chain_of_three_markets() {
         new_duration_secs: 3600,
         rollover_percentage_bps: 5000,
     };
-    let call2_id = ctx.market.claim_and_rollover(
-        &ctx.winner,
-        &ctx.call_id,
-        &rollover1,
-    );
+    let call2_id = ctx
+        .market
+        .claim_and_rollover(&ctx.winner, &ctx.call_id, &rollover1);
 
     let factory = MockFactoryClient::new(&ctx.env, &ctx.factory_id);
     let market2 = PredictionMarketClient::new(&ctx.env, &factory.get_market(&call2_id));
@@ -963,11 +1063,9 @@ fn rollover_chain_of_three_markets() {
     let ts = ctx.env.ledger().timestamp() + 3601;
     ctx.env.ledger().set_timestamp(ts);
 
-    // Generate a new oracle keypair for resolution
-    let mut seed = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut seed);
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
-    let oracle_pubkey = BytesN::from_array(&ctx.env, &signing_key.verifying_key().to_bytes());
+    // Use the same oracle keypair registered during setup
+    let signing_key = &ctx.signing_key;
+    let oracle_pubkey = ctx.oracle_pubkey.clone();
 
     let msg = backit_shared::build_message(&ctx.env, call2_id, 1u32, ctx.price, ts);
     let mut msg_bytes = [0u8; 128];
@@ -987,7 +1085,11 @@ fn rollover_chain_of_three_markets() {
     let _: Val = ctx.env.invoke_contract(
         &ctx.outcome_mgr_id,
         &Symbol::new(&ctx.env, "submit_outcome_for_market"),
-        vec![&ctx.env, signed.into_val(&ctx.env), (ts - 1).into_val(&ctx.env)],
+        vec![
+            &ctx.env,
+            signed.into_val(&ctx.env),
+            (ts - 1).into_val(&ctx.env),
+        ],
     );
     let _: Val = ctx.env.invoke_contract(
         &ctx.outcome_mgr_id,
@@ -1005,16 +1107,9 @@ fn rollover_chain_of_three_markets() {
         new_duration_secs: 3600,
         rollover_percentage_bps: 5000,
     };
-    let call3_id = market2.claim_and_rollover(
-        &ctx.winner,
-        &call2_id,
-        &rollover2,
-    );
+    let call3_id = market2.claim_and_rollover(&ctx.winner, &call2_id, &rollover2);
 
-    let market3 = PredictionMarketClient::new(
-        &ctx.env,
-        &factory.get_market(&call3_id),
-    );
+    let market3 = PredictionMarketClient::new(&ctx.env, &factory.get_market(&call3_id));
 
     let chain = market3.get_rollover_chain(&call3_id);
     assert_eq!(chain.len(), 1);
@@ -1043,23 +1138,21 @@ fn rollover_bonus_calculation() {
         rollover_percentage_bps: 5000,
     };
 
-    let new_call_id = ctx.market.claim_and_rollover(
-        &ctx.winner,
-        &ctx.call_id,
-        &rollover_config,
-    );
+    let new_call_id = ctx
+        .market
+        .claim_and_rollover(&ctx.winner, &ctx.call_id, &rollover_config);
 
     let factory = MockFactoryClient::new(&ctx.env, &ctx.factory_id);
     let new_market_addr = factory.get_market(&new_call_id);
     let new_market = PredictionMarketClient::new(&ctx.env, &new_market_addr);
 
     let winner_stake = new_market.get_staker_stake(&new_call_id, &ctx.winner, &1u32);
-    assert_eq!(winner_stake, 2_500_000);
+    assert_eq!(winner_stake, 2_475_000);
 
-    // Bonus (25_000) is transferred from old market to new market as protocol
-    // contribution; the contract balance exceeds just the user's stake.
+    // Bonus (24_750) is funded from the fee retained in the old market;
+    // total_new_stake = 2,475,000 + 24,750 = 2,499,750.
     let market_balance = TokenClient::new(&ctx.env, &ctx.token).balance(&new_market_addr);
-    assert!(market_balance >= 2_525_000);
+    assert!(market_balance >= 2_499_750);
 }
 
 #[test]
@@ -1078,17 +1171,12 @@ fn rollover_different_condition() {
         rollover_percentage_bps: 7500,
     };
 
-    let new_call_id = ctx.market.claim_and_rollover(
-        &ctx.winner,
-        &ctx.call_id,
-        &rollover_config,
-    );
+    let new_call_id = ctx
+        .market
+        .claim_and_rollover(&ctx.winner, &ctx.call_id, &rollover_config);
 
     let factory = MockFactoryClient::new(&ctx.env, &ctx.factory_id);
-    let new_market = PredictionMarketClient::new(
-        &ctx.env,
-        &factory.get_market(&new_call_id),
-    );
+    let new_market = PredictionMarketClient::new(&ctx.env, &factory.get_market(&new_call_id));
 
     let call = new_market.get_call(&new_call_id);
     assert_eq!(call.condition, ConditionType::TargetBelow(95_000_000));

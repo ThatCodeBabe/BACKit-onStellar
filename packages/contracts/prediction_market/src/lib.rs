@@ -108,7 +108,11 @@ fn with_lock<T>(env: &Env, f: impl FnOnce() -> Result<T, MarketError>) -> Result
 /// #465: Shared checked-arithmetic helper: adds `amount` to `current` and,
 /// if `config.max_stake_per_user` is set, rejects the result if it would
 /// exceed the cap. Returns the updated total on success.
-fn check_max_stake(config: &MarketConfig, current: i128, amount: i128) -> Result<i128, MarketError> {
+fn check_max_stake(
+    config: &MarketConfig,
+    current: i128,
+    amount: i128,
+) -> Result<i128, MarketError> {
     let updated = current.checked_add(amount).ok_or(MarketError::Overflow)?;
     if config.max_stake_per_user > 0 && updated > config.max_stake_per_user {
         return Err(MarketError::InvalidStakeAmount);
@@ -141,7 +145,9 @@ fn apply_stake(
     let updated_staker_stake = check_max_stake(config, current_staker_stake, amount)?;
 
     let current_total = call.outcome_stakes.get(position).unwrap_or(0);
-    let updated_total = current_total.checked_add(amount).ok_or(MarketError::Overflow)?;
+    let updated_total = current_total
+        .checked_add(amount)
+        .ok_or(MarketError::Overflow)?;
 
     call.outcome_stakes.set(position, updated_total);
     outcome_stakers.set(staker.clone(), updated_staker_stake);
@@ -674,7 +680,11 @@ impl PredictionMarket {
     /// caller receives `config.expired_order_refund_bps` of the escrowed
     /// amount as a small reward for the cleanup, and the remainder goes back
     /// to the order's original owner.
-    pub fn refund_expired_order(env: Env, caller: Address, order_id: u64) -> Result<(), MarketError> {
+    pub fn refund_expired_order(
+        env: Env,
+        caller: Address,
+        order_id: u64,
+    ) -> Result<(), MarketError> {
         caller.require_auth();
         with_lock(&env, || {
             let order = get_limit_order(&env, order_id).ok_or(MarketError::OrderNotFound)?;
@@ -692,7 +702,10 @@ impl PredictionMarket {
                 .ok_or(MarketError::Overflow)?
                 .checked_div(10_000)
                 .ok_or(MarketError::Overflow)?;
-            let refund_to_user = order.amount.checked_sub(reward).ok_or(MarketError::Overflow)?;
+            let refund_to_user = order
+                .amount
+                .checked_sub(reward)
+                .ok_or(MarketError::Overflow)?;
 
             if reward > 0 {
                 transfer_token(
@@ -938,9 +951,7 @@ impl PredictionMarket {
     }
 
     /// #497: Get current reserve status (view function).
-    pub fn get_reserve_status(
-        env: Env,
-    ) -> Result<ReserveVerification, MarketError> {
+    pub fn get_reserve_status(env: Env) -> Result<ReserveVerification, MarketError> {
         let _config = get_config(&env).ok_or(MarketError::NotInitialized)?;
         let call = get_call(&env).ok_or(MarketError::CallNotFound)?;
 
@@ -1039,42 +1050,29 @@ impl PredictionMarket {
             return Err(MarketError::CallSettled);
         }
 
-        // Compute payout (simple pool math, no fee deduction — the fee is
-        // handled by outcome_manager's separate `claim_payout` call).
         let total_stake = total_call_stake(&call).ok_or(MarketError::Overflow)?;
         let total_winning = call.outcome_stakes.get(winning_outcome).unwrap_or(0);
         let total_losing = total_stake
             .checked_sub(total_winning)
             .ok_or(MarketError::Overflow)?;
 
-        // Query fee config from outcome_manager and compute after-fee payout.
         let outcome_manager = config.outcome_manager.clone();
-        let empty_args: Vec<Val> = Vec::new(&env);
-        let (fee_bps, fee_collector): (u32, Address) = env.invoke_contract(
+
+        let (fee_bps, _fee_collector) = env.invoke_contract::<(u32, Address)>(
             &outcome_manager,
             &Symbol::new(&env, "fee_config"),
-            empty_args,
+            Vec::new(&env),
         );
-        let total_fee = total_losing
+        let total_fee = total_stake
             .checked_mul(fee_bps as i128)
             .ok_or(MarketError::Overflow)?
-            .checked_div(10000)
+            .checked_div(10_000)
             .ok_or(MarketError::Overflow)?;
         let net_losing = total_losing
             .checked_sub(total_fee)
             .ok_or(MarketError::Overflow)?;
 
-        let staker_fee_share = if total_winning > 0 {
-            user_winning_stake
-                .checked_mul(total_fee)
-                .ok_or(MarketError::Overflow)?
-                .checked_div(total_winning)
-                .ok_or(MarketError::Overflow)?
-        } else {
-            0
-        };
-
-        let payout_after_fee = if total_losing > 0 && total_winning > 0 {
+        let payout_after_fee = if net_losing > 0 && total_winning > 0 {
             let prize_share = user_winning_stake
                 .checked_mul(net_losing)
                 .ok_or(MarketError::Overflow)?
@@ -1137,20 +1135,19 @@ impl PredictionMarket {
 
         let new_call_id: u64 = {
             let args: Vec<Val> = Vec::new(&env);
-            env.invoke_contract(
-                &new_market_addr,
-                &Symbol::new(&env, "get_call_id"),
-                args,
-            )
+            env.invoke_contract(&new_market_addr, &Symbol::new(&env, "get_call_id"), args)
         };
 
-        // Transfer fee share + payout directly (avoids re-entrant call back
-        // from outcome_manager.claim_payout → market.release_escrow).
+        // Transfer payout directly (avoids re-entrant call back from
+        // outcome_manager.claim_payout → market.release_escrow).
         let market_addr = env.current_contract_address();
-        if staker_fee_share > 0 {
-            transfer_token(&env, &call.stake_token, &market_addr, &fee_collector, staker_fee_share);
-        }
-        transfer_token(&env, &call.stake_token, &market_addr, &user, payout_after_fee);
+        transfer_token(
+            &env,
+            &call.stake_token,
+            &market_addr,
+            &user,
+            payout_after_fee,
+        );
 
         // Call outcome_manager.claim_payout_no_release to record the
         // claim (no release_escrow call → no re-entry).
@@ -1173,14 +1170,8 @@ impl PredictionMarket {
         // Stake rollover amount on the new market (transfers from user to new
         // market, user already authed via the entry-point signature).
         if rollover_amount > 0 {
-            let stake_args = (
-                user.clone(),
-                new_call_id,
-                rollover_amount,
-                1u32,
-            )
-                .into_val(&env);
-            env.invoke_contract::<()>(
+            let stake_args = (user.clone(), new_call_id, rollover_amount, 1u32).into_val(&env);
+            env.invoke_contract::<Call>(
                 &new_market_addr,
                 &Symbol::new(&env, "stake_on_call"),
                 stake_args,
@@ -1236,10 +1227,7 @@ impl PredictionMarket {
 
     /// Return the rollover ancestry chain for this market, with the earliest
     /// ancestor first.
-    pub fn get_rollover_chain(
-        env: Env,
-        call_id: u64,
-    ) -> Result<Vec<RolloverLink>, MarketError> {
+    pub fn get_rollover_chain(env: Env, call_id: u64) -> Result<Vec<RolloverLink>, MarketError> {
         let config = get_config(&env).ok_or(MarketError::NotInitialized)?;
         require_call_id(&config, call_id)?;
         Ok(storage::get_rollover_chain(&env, call_id))
@@ -1276,10 +1264,7 @@ impl PredictionMarket {
 
     /// Return the parent call id and rolled amount, if this market was created
     /// via a rollover.
-    pub fn get_parent_call(
-        env: Env,
-        call_id: u64,
-    ) -> Result<Option<(u64, i128)>, MarketError> {
+    pub fn get_parent_call(env: Env, call_id: u64) -> Result<Option<(u64, i128)>, MarketError> {
         let config = get_config(&env).ok_or(MarketError::NotInitialized)?;
         require_call_id(&config, call_id)?;
         let call = get_call(&env).ok_or(MarketError::CallNotFound)?;

@@ -1,8 +1,9 @@
 /**
  * GraphQL API Layer — integration tests (Issue #548)
  *
- * Uses @nestjs/testing with an in-memory SQLite database so tests are
- * self-contained and require no running Postgres instance.
+ * Uses a minimal test module: GraphQLModule.forRoot for schema generation,
+ * resolvers registered directly, all services mocked. No feature modules,
+ * no TypeORM, no database required.
  *
  * Covered queries:
  *  1. `calls`        — paginated call listing
@@ -16,24 +17,29 @@
 
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
-import * as request from 'supertest';
-import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { GraphQLModule } from '@nestjs/graphql';
+import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
+import { join } from 'path';
+import request from 'supertest';
 
-// ── Module under test ────────────────────────────────────────────────────────
-import { GraphqlModule } from './graphql.module';
+// ── Resolvers (registered directly, not via feature modules) ─────────────────
+import { CallsResolver } from './resolvers/calls.resolver';
+import { UsersResolver } from './resolvers/users.resolver';
+import { FeedResolver } from './resolvers/feed.resolver';
+import { LeaderboardResolver } from './resolvers/leaderboard.resolver';
+import { SearchResolver } from './resolvers/search.resolver';
 
-// ── Service mocks ────────────────────────────────────────────────────────────
+// ── Services (all mocked) ────────────────────────────────────────────────────
 import { CallsService } from '../calls/calls.service';
-import { UsersService } from '../user/users.service';
 import { BookmarksService } from '../bookmarks/bookmarks.service';
+import { UsersService } from '../user/users.service';
 import { LeaderboardService } from '../leaderboard/leaderboard.service';
 import { SearchService } from '../search/search.service';
 import { AuthService } from '../auth/auth.service';
 
-// ── Entities ──────────────────────────────────────────────────────────────────
-import { Users } from '../user/entities/users.entity';
-import { Stake } from '../stakes/entities/stake.entity';
+// ── Guards (replaced with pass-through mocks) ────────────────────────────────
+import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Fixtures
@@ -56,7 +62,7 @@ const MOCK_CALL = {
   updatedAt: new Date('2026-01-01'),
 };
 
-const MOCK_USER: Partial<Users> = {
+const MOCK_USER = {
   id: 'user-1',
   walletAddress: 'GA1111',
   displayName: 'Alice',
@@ -183,31 +189,41 @@ describe('GraphQL API Layer (integration)', () => {
     const mockAuthService = buildMockAuthService();
 
     const moduleRef: TestingModule = await Test.createTestingModule({
-      imports: [GraphqlModule],
+      imports: [
+        GraphQLModule.forRoot<ApolloDriverConfig>({
+          driver: ApolloDriver,
+          autoSchemaFile: join(process.cwd(), 'src/schema.gql'),
+          sortSchema: true,
+          playground: false,
+          context: ({ req }: { req: unknown }) => ({ req }),
+          buildSchemaOptions: {
+            numberScalarMode: 'integer',
+          },
+        }),
+      ],
+      providers: [
+        // Resolvers
+        CallsResolver,
+        UsersResolver,
+        FeedResolver,
+        LeaderboardResolver,
+        SearchResolver,
+
+        // Mocked services
+        { provide: CallsService, useValue: mockCallsService },
+        { provide: BookmarksService, useValue: mockBookmarksService },
+        { provide: UsersService, useValue: mockUsersService },
+        { provide: LeaderboardService, useValue: mockLeaderboardService },
+        { provide: SearchService, useValue: mockSearchService },
+        { provide: AuthService, useValue: mockAuthService },
+      ],
     })
-      .overrideProvider(CallsService)
-      .useValue(mockCallsService)
-      .overrideProvider(UsersService)
-      .useValue(mockUsersService)
-      .overrideProvider(BookmarksService)
-      .useValue(mockBookmarksService)
-      .overrideProvider(LeaderboardService)
-      .useValue(mockLeaderboardService)
-      .overrideProvider(SearchService)
-      .useValue(mockSearchService)
-      .overrideProvider(AuthService)
-      .useValue(mockAuthService)
-      // Stub out TypeORM repositories so no real DB is needed
-      .overrideProvider(getRepositoryToken(Users))
-      .useValue({
-        find: jest.fn().mockResolvedValue([MOCK_USER]),
-        findOne: jest.fn().mockResolvedValue(MOCK_USER),
-      } as Partial<Repository<Users>>)
-      .overrideProvider(getRepositoryToken(Stake))
-      .useValue({
-        find: jest.fn().mockResolvedValue([]),
-        findOne: jest.fn().mockResolvedValue(null),
-      } as Partial<Repository<Stake>>)
+      // Replace auth guards with pass-throughs — switchToHttp().getRequest()
+      // returns undefined in the GraphQL execution context.
+      .overrideGuard(OptionalJwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
       .compile();
 
     app = moduleRef.createNestApplication();
@@ -215,7 +231,9 @@ describe('GraphQL API Layer (integration)', () => {
   });
 
   afterAll(async () => {
-    await app.close();
+    if (app) {
+      await app.close();
+    }
   });
 
   // ── Test 1: Query.calls ───────────────────────────────────────────────────

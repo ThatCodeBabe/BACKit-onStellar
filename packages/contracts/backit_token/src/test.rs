@@ -51,21 +51,19 @@ fn setup_initialized(
     // Admin must authorize initialize
     env.mock_all_auths();
 
-    client
-        .initialize(
-            &admin,
-            &usdc_id,
-            &community,
-            &team,
-            &treasury,
-            &liquidity,
-            &airdrop,
-        )
-        .unwrap();
+    client.initialize(
+        &admin,
+        &usdc_id,
+        &community,
+        &team,
+        &treasury,
+        &liquidity,
+        &airdrop,
+    );
 
     // Mint some USDC to the admin so fee_pool_deposit can pull from it
     let usdc_sac = StellarAssetClient::new(env, &usdc_id);
-    usdc_sac.mint(&admin, &10_000_000_i128);
+    usdc_sac.mint(&admin, &10_000_000_0000000_i128);
 
     let _ = usdc_admin; // silence unused warning
     (
@@ -136,7 +134,7 @@ fn test_revenue_share_proportional_to_holdings() {
 
     // Deposit 1_000_000 USDC of fees (7-decimal: 1_000_000_0000000 stroops)
     let fee_amount: i128 = 1_000_000_0000000;
-    client.fee_pool_deposit(&fee_amount).unwrap();
+    client.fee_pool_deposit(&fee_amount);
     assert_eq!(client.get_total_fees_collected(), fee_amount);
 
     let total_supply = client.total_supply();
@@ -148,7 +146,7 @@ fn test_revenue_share_proportional_to_holdings() {
     let estimate = client.get_revenue_share_estimate(&community);
     assert_eq!(estimate, expected_share);
 
-    let claimed = client.claim_revenue_share(&community).unwrap();
+    let claimed = client.claim_revenue_share(&community);
     assert_eq!(claimed, expected_share);
 
     // Distributed counter updated
@@ -169,13 +167,13 @@ fn test_no_double_claim() {
         setup_initialized(&env);
 
     let fee_amount: i128 = 500_000_0000000;
-    client.fee_pool_deposit(&fee_amount).unwrap();
+    client.fee_pool_deposit(&fee_amount);
 
     // First claim succeeds
-    client.claim_revenue_share(&community).unwrap();
+    client.claim_revenue_share(&community);
 
     // Second claim before any new fees should fail
-    let result = client.claim_revenue_share(&community);
+    let result = client.try_claim_revenue_share(&community);
     assert!(result.is_err());
 }
 
@@ -194,7 +192,7 @@ fn test_staking_boost_calculation() {
     // 180 days lock → 4× boost
     let lock_duration: u64 = 180 * 24 * 3600;
 
-    client.stake_backit(&team, &stake_amount, &lock_duration).unwrap();
+    client.stake_backit(&team, &stake_amount, &lock_duration);
 
     let record = client.get_stake_record(&team).unwrap();
     assert_eq!(record.amount, stake_amount);
@@ -219,10 +217,10 @@ fn test_lock_period_enforced() {
     let stake_amount: i128 = 500_000_0000000;
     let lock_secs: u64 = 90 * 24 * 3600; // 90 days
 
-    client.stake_backit(&team, &stake_amount, &lock_secs).unwrap();
+    client.stake_backit(&team, &stake_amount, &lock_secs);
 
     // Attempting to unstake immediately must fail
-    let early_unstake = client.unstake_backit(&team);
+    let early_unstake = client.try_unstake_backit(&team);
     assert!(early_unstake.is_err());
 
     // Advance ledger past the lock
@@ -231,7 +229,7 @@ fn test_lock_period_enforced() {
     });
 
     // Now unstake must succeed
-    client.unstake_backit(&team).unwrap();
+    client.unstake_backit(&team);
 
     // Tokens returned to liquid balance
     let team_balance = client.balance(&team);
@@ -258,25 +256,31 @@ fn test_claim_after_stake_compounds_revenue() {
     let lock_secs: u64 = 180 * 24 * 3600; // 4× boost
 
     // Stake first
-    client.stake_backit(&community, &stake_amount, &lock_secs).unwrap();
+    client.stake_backit(&community, &stake_amount, &lock_secs);
 
     // Deposit fees AFTER stake
     let fees: i128 = 2_000_000_0000000;
-    client.fee_pool_deposit(&fees).unwrap();
+    client.fee_pool_deposit(&fees);
 
-    // Effective balance = liquid + staked * 2 * boost
+    // Effective balance = liquid + staked * 2 * boost, capped at total_supply
     let liquid = client.balance(&community);
     // liquid = 40_000_000_0000000 - 10_000_000_0000000 = 30_000_000_0000000
     let record = client.get_stake_record(&community).unwrap();
-    let effective = liquid + record.amount * 2 * (record.boost as i128);
+    let uncapped_effective = liquid + record.amount * 2 * (record.boost as i128);
 
     let total_supply = client.total_supply();
+    // Contract caps effective_balance at total_supply to prevent overclaiming
+    let effective = if uncapped_effective > total_supply {
+        total_supply
+    } else {
+        uncapped_effective
+    };
     let expected_share = fees * effective / total_supply;
 
     let estimate = client.get_revenue_share_estimate(&community);
     assert_eq!(estimate, expected_share);
 
-    let claimed = client.claim_revenue_share(&community).unwrap();
+    let claimed = client.claim_revenue_share(&community);
     assert_eq!(claimed, expected_share);
 
     // Staker gets MORE than a non-staking holder with same token count
@@ -294,7 +298,7 @@ fn test_cannot_initialize_twice() {
     let (client, admin, usdc_id, community, team, treasury, liquidity, airdrop) =
         setup_initialized(&env);
 
-    let result = client.initialize(
+    let result = client.try_initialize(
         &admin, &usdc_id, &community, &team, &treasury, &liquidity, &airdrop,
     );
     assert!(result.is_err());
@@ -313,10 +317,10 @@ fn test_cannot_double_stake() {
     let amount: i128 = 1_000_000_0000000;
     let lock: u64 = 30 * 24 * 3600;
 
-    client.stake_backit(&team, &amount, &lock).unwrap();
+    client.stake_backit(&team, &amount, &lock);
 
     // Second stake before unlock must fail
-    let result = client.stake_backit(&team, &amount, &lock);
+    let result = client.try_stake_backit(&team, &amount, &lock);
     assert!(result.is_err());
 }
 
@@ -336,7 +340,7 @@ fn test_transfer() {
 
     let transfer_amount: i128 = 1_000_0000000; // 1 000 BACKit
 
-    client.transfer(&community, &team, &transfer_amount).unwrap();
+    client.transfer(&community, &team, &transfer_amount);
 
     assert_eq!(client.balance(&community), community_initial - transfer_amount);
     assert_eq!(client.balance(&team), team_initial + transfer_amount);
@@ -353,10 +357,10 @@ fn test_zero_balance_claim_fails() {
         setup_initialized(&env);
 
     let fees: i128 = 100_0000000;
-    client.fee_pool_deposit(&fees).unwrap();
+    client.fee_pool_deposit(&fees);
 
     // Random address with zero balance
     let nobody = Address::generate(&env);
-    let result = client.claim_revenue_share(&nobody);
+    let result = client.try_claim_revenue_share(&nobody);
     assert!(result.is_err());
 }

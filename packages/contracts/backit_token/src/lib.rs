@@ -427,11 +427,18 @@ impl BackitToken {
     /// `2 × boost_multiplier` instead of 1×, capturing both the "staked =
     /// locked = more committed" premium (2×) and the lock-duration multiplier.
     fn compute_effective_balance(env: &Env, holder: &Address, liquid_balance: i128) -> i128 {
+        let total_supply = get_total_supply(env);
         match get_stake(env, holder) {
             Some(record) => {
                 // Staked tokens: weight = staked_amount * 2 * boost
                 let staked_weight = record.amount * 2_i128 * (record.boost as i128);
-                liquid_balance + staked_weight
+                let effective = liquid_balance + staked_weight;
+                // Cap at total_supply so no holder can claim more than 100% of fees
+                if effective > total_supply {
+                    total_supply
+                } else {
+                    effective
+                }
             }
             None => liquid_balance,
         }
