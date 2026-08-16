@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+  "backit_token",
   "call_registry",
   "charity_markets",
   "contracts/hello-world",
