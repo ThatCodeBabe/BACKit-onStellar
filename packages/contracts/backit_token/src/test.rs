@@ -262,13 +262,19 @@ fn test_claim_after_stake_compounds_revenue() {
     let fees: i128 = 2_000_000_0000000;
     client.fee_pool_deposit(&fees);
 
-    // Effective balance = liquid + staked * 2 * boost
+    // Effective balance = liquid + staked * 2 * boost, capped at total_supply
     let liquid = client.balance(&community);
     // liquid = 40_000_000_0000000 - 10_000_000_0000000 = 30_000_000_0000000
     let record = client.get_stake_record(&community).unwrap();
-    let effective = liquid + record.amount * 2 * (record.boost as i128);
+    let uncapped_effective = liquid + record.amount * 2 * (record.boost as i128);
 
     let total_supply = client.total_supply();
+    // Contract caps effective_balance at total_supply to prevent overclaiming
+    let effective = if uncapped_effective > total_supply {
+        total_supply
+    } else {
+        uncapped_effective
+    };
     let expected_share = fees * effective / total_supply;
 
     let estimate = client.get_revenue_share_estimate(&community);
