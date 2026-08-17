@@ -30,6 +30,8 @@ pub enum DataKey {
     InstanceEntryCount,
     Sep10Domain(Address),
     Locked,
+    AccountFirstSeen(Address),
+    UserTrustlineCount(Address),
 }
 
 /// Store contract configuration
@@ -503,4 +505,38 @@ pub fn acquire_lock(env: &Env) {
 /// Release the reentrancy lock.
 pub fn release_lock(env: &Env) {
     env.storage().instance().set(&DataKey::Locked, &false);
+}
+
+/// Retrieve the ledger sequence when the user was first seen.
+pub fn get_account_first_seen(env: &Env, user: &Address) -> Option<u32> {
+    let key = DataKey::AccountFirstSeen(user.clone());
+    env.storage().persistent().get(&key)
+}
+
+/// Record the first time the user is seen.
+pub fn set_account_first_seen(env: &Env, user: &Address, sequence: u32) {
+    let key = DataKey::AccountFirstSeen(user.clone());
+    env.storage().persistent().set(&key, &sequence);
+    env.storage().persistent().extend_ttl(
+        &key,
+        PERSISTENT_LIFETIME_THRESHOLD,
+        PERSISTENT_BUMP_AMOUNT,
+    );
+}
+
+/// Retrieve user trustline count.
+pub fn get_user_trustline_count(env: &Env, user: &Address) -> u32 {
+    let key = DataKey::UserTrustlineCount(user.clone());
+    env.storage().persistent().get(&key).unwrap_or(0)
+}
+
+/// Record user trustline count.
+pub fn set_user_trustline_count(env: &Env, user: &Address, count: u32) {
+    let key = DataKey::UserTrustlineCount(user.clone());
+    env.storage().persistent().set(&key, &count);
+    env.storage().persistent().extend_ttl(
+        &key,
+        PERSISTENT_LIFETIME_THRESHOLD,
+        PERSISTENT_BUMP_AMOUNT,
+    );
 }
