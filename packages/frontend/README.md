@@ -27,3 +27,12 @@ The development server will start on http://localhost:3000.
 - `pnpm start` - Start production server
 - `pnpm lint` - Run ESLint
 - `pnpm type-check` - Run TypeScript type checking
+- `pnpm test` - Run the Vitest unit and component suite
+- `pnpm test:e2e` - Run the Playwright end-to-end suite
+
+## Backend data
+
+Market detail, staking, portfolio and payout screens read from the NestJS API
+via the typed clients in `src/lib/backend`. Set `NEXT_PUBLIC_BACKEND_URL` to
+point at it. See [docs/market-portfolio-data.md](docs/market-portfolio-data.md)
+for the endpoints used, the monetary-unit rules and how to seed local data.
