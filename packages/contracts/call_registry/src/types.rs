@@ -34,6 +34,17 @@ pub const GATE_MIN_XLM_BALANCE: u32 = 2;
 pub const GATE_MIN_TRUSTLINES: u32 = 3;
 pub const GATE_HOLDS_BADGE: u32 = 4;
 
+/// Human-friendly staking gate enum for view helpers.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum StakingGate {
+    None,
+    MinAccountAge(u32),
+    MinXlmBalance(i128),
+    MinTrustlines(u32),
+    HoldsBadge(Address),
+}
+
 /// Arguments for initializing a new Call
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -192,6 +203,43 @@ pub struct ContractConfig {
     pub global_gate_min_xlm_balance: i128,
     pub global_gate_min_trustlines: u32,
     pub global_gate_badge: Option<Address>,
+}
+
+/// Operations that can be proposed and executed by the multisig admin set.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum Operation {
+    SetFee(u32),
+    SetMinStake(i128),
+    SetAdminThreshold(u32),
+    Pause,
+    Unpause,
+    Upgrade(BytesN<32>),
+    WithdrawFees(Address, i128),
+    AddAdmin(Address),
+    RemoveAdmin(Address),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProposalStatus {
+    Active,
+    Vetoed,
+    Executed,
+    Cancelled,
+}
+
+/// Proposal struct stored in persistent storage
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Proposal {
+    pub id: u64,
+    pub proposer: Address,
+    pub operation: Operation,
+    pub approvals: Vec<Address>,
+    pub created_at: u64,
+    pub timelock_until: u64,
+    pub status: ProposalStatus,
 }
 
 /// Contract-wide aggregated statistics for dashboards.

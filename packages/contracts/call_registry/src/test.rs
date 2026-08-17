@@ -49,7 +49,7 @@ mod call_registry {
         let env = Env::default();
         env.mock_all_auths();
 
-        let contract_id = env.register(CallRegistry, ());
+        let contract_id = env.register_contract(None, CallRegistry);
         let client = CallRegistryClient::new(&env, &contract_id);
 
         let admin = Address::generate(&env);
@@ -160,7 +160,7 @@ mod call_registry {
     #[test]
     fn test_initialize() {
         let (env, admin, outcome_manager, _) = create_test_env();
-        let contract_id = env.register(CallRegistry, ());
+        let contract_id = env.register_contract(None, CallRegistry);
         let client = CallRegistryClient::new(&env, &contract_id);
 
         client.initialize(&admin, &outcome_manager, &TEST_MIN_STAKE);
@@ -380,6 +380,169 @@ mod call_registry {
             Err(Ok(CallRegistryError::FeeTooHigh)),
             "fee > 10_000 should return FeeTooHigh"
         );
+    }
+
+    #[test]
+    fn test_multisig_n_of_m_approval_exec() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, CallRegistry);
+        let client = CallRegistryClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let outcome_manager = Address::generate(&env);
+        client.initialize(&admin, &outcome_manager, &TEST_MIN_STAKE);
+
+        // configure multisig: 3 admins, threshold 2
+        let admin_a = Address::generate(&env);
+        let admin_b = Address::generate(&env);
+        let admin_c = Address::generate(&env);
+
+        let mut cfg = client.get_config();
+        let mut v = soroban_sdk::Vec::new(&env);
+        v.push_back(admin_a.clone());
+        v.push_back(admin_b.clone());
+        v.push_back(admin_c.clone());
+        cfg.admin_set = v;
+        cfg.admin_threshold = 2;
+        env.as_contract(&contract_id, || crate::storage::set_config(&env, &cfg));
+
+        // Propose set_fee to 123 bps with 1-second timelock
+        let proposal_id =
+            client.propose_admin_operation(&admin, &crate::types::Operation::SetFee(123u32), &1u64);
+
+        // Approve by two admins
+        client.approve_admin_proposal(&admin_a, &proposal_id);
+        client.approve_admin_proposal(&admin_b, &proposal_id);
+
+        // advance ledger past timelock
+        env.ledger().set_timestamp(env.ledger().timestamp() + 2);
+
+        // execute (any caller)
+        let caller = Address::generate(&env);
+        client.execute_admin_proposal(&caller, &proposal_id);
+
+        let cfg2 = client.get_config();
+        assert_eq!(cfg2.fee_bps, 123u32);
+    }
+
+    #[test]
+    fn test_multisig_veto_kills_proposal() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, CallRegistry);
+        let client = CallRegistryClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let outcome_manager = Address::generate(&env);
+        client.initialize(&admin, &outcome_manager, &TEST_MIN_STAKE);
+
+        let admin_a = Address::generate(&env);
+        let admin_b = Address::generate(&env);
+        let mut cfg = client.get_config();
+        let mut v = soroban_sdk::Vec::new(&env);
+        v.push_back(admin_a.clone());
+        v.push_back(admin_b.clone());
+        cfg.admin_set = v;
+        cfg.admin_threshold = 2;
+        env.as_contract(&contract_id, || crate::storage::set_config(&env, &cfg));
+
+        let proposal_id = client.propose_admin_operation(
+            &admin,
+            &crate::types::Operation::SetMinStake(5_000_000_i128),
+            &1u64,
+        );
+
+        // veto by admin_a
+        client.veto_admin_proposal(&admin_a, &proposal_id);
+
+        // advance past timelock
+        env.ledger().set_timestamp(env.ledger().timestamp() + 2);
+
+        let caller = Address::generate(&env);
+        let res = client.try_execute_admin_proposal(&caller, &proposal_id);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_cancel_after_timelock_insufficient_approvals() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, CallRegistry);
+        let client = CallRegistryClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let outcome_manager = Address::generate(&env);
+        client.initialize(&admin, &outcome_manager, &TEST_MIN_STAKE);
+
+        let admin_a = Address::generate(&env);
+        let admin_b = Address::generate(&env);
+        let mut cfg = client.get_config();
+        let mut v = soroban_sdk::Vec::new(&env);
+        v.push_back(admin_a.clone());
+        v.push_back(admin_b.clone());
+        cfg.admin_set = v;
+        cfg.admin_threshold = 2;
+        env.as_contract(&contract_id, || crate::storage::set_config(&env, &cfg));
+
+        let proposal_id = client.propose_admin_operation(
+            &admin,
+            &crate::types::Operation::SetMinStake(7_000_000_i128),
+            &1u64,
+        );
+
+        // only one approval
+        client.approve_admin_proposal(&admin_a, &proposal_id);
+
+        // advance past timelock and cancel
+        env.ledger().set_timestamp(env.ledger().timestamp() + 2);
+        let caller = Address::generate(&env);
+        client.cancel_admin_proposal(&caller, &proposal_id);
+
+        let res: Option<crate::types::Proposal> = env.as_contract(&contract_id, || {
+            crate::storage::get_proposal(&env, proposal_id)
+        });
+        assert!(res.is_none());
+    }
+
+    #[test]
+    fn test_admin_add_remove_via_proposal() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, CallRegistry);
+        let client = CallRegistryClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let outcome_manager = Address::generate(&env);
+        client.initialize(&admin, &outcome_manager, &TEST_MIN_STAKE);
+
+        let admin_a = Address::generate(&env);
+        let admin_b = Address::generate(&env);
+        let mut cfg = client.get_config();
+        let mut v = soroban_sdk::Vec::new(&env);
+        v.push_back(admin_a.clone());
+        v.push_back(admin_b.clone());
+        cfg.admin_set = v;
+        cfg.admin_threshold = 2;
+        env.as_contract(&contract_id, || crate::storage::set_config(&env, &cfg));
+
+        let new_admin = Address::generate(&env);
+        let proposal_id = client.propose_admin_operation(
+            &admin,
+            &crate::types::Operation::AddAdmin(new_admin.clone()),
+            &1u64,
+        );
+        client.approve_admin_proposal(&admin_a, &proposal_id);
+        client.approve_admin_proposal(&admin_b, &proposal_id);
+        env.ledger().set_timestamp(env.ledger().timestamp() + 2);
+        let caller = Address::generate(&env);
+        client.execute_admin_proposal(&caller, &proposal_id);
+
+        let cfg2 = client.get_config();
+        // new_admin should be present
+        let mut found = false;
+        for a in cfg2.admin_set.iter() {
+            if a == new_admin {
+                found = true;
+            }
+        }
+        assert!(found, "new admin should be added");
     }
 
     // ── extend_call_ttl ───────────────────────────────────────────────────────
@@ -3236,7 +3399,7 @@ mod native_xlm {
         let admin = Address::generate(&env);
         let outcome_manager = Address::generate(&env);
 
-        let contract_id = env.register(CallRegistry, ());
+        let contract_id = env.register_contract(None, CallRegistry);
         let client = CallRegistryClient::new(&env, &contract_id);
 
         client.initialize(&admin, &outcome_manager, &MIN_STAKE);
@@ -3564,7 +3727,7 @@ mod sep10_tests {
     fn setup() -> (Env, CallRegistryClient<'static>, Address, Address) {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(CallRegistry, ());
+        let contract_id = env.register_contract(None, CallRegistry);
         let client = CallRegistryClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
         let outcome_manager = Address::generate(&env);

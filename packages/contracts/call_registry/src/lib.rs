@@ -870,6 +870,52 @@ impl CallRegistry {
         admin::set_staking_cutoff(env, new_cutoff);
     }
 
+    /// Propose a multisig admin operation.
+    pub fn propose_admin_operation(
+        env: Env,
+        proposer: Address,
+        operation: types::Operation,
+        timelock_seconds: u64,
+    ) -> Result<u64, CallRegistryError> {
+        admin::propose_admin_operation(env, proposer, operation, timelock_seconds)
+    }
+
+    /// Approve a proposal.
+    pub fn approve_admin_proposal(
+        env: Env,
+        admin_addr: Address,
+        proposal_id: u64,
+    ) -> Result<(), CallRegistryError> {
+        admin::approve_admin_proposal(env, admin_addr, proposal_id)
+    }
+
+    /// Veto a proposal.
+    pub fn veto_admin_proposal(
+        env: Env,
+        admin_addr: Address,
+        proposal_id: u64,
+    ) -> Result<(), CallRegistryError> {
+        admin::veto_admin_proposal(env, admin_addr, proposal_id)
+    }
+
+    /// Execute a proposal after timelock and approvals.
+    pub fn execute_admin_proposal(
+        env: Env,
+        caller: Address,
+        proposal_id: u64,
+    ) -> Result<(), CallRegistryError> {
+        admin::execute_admin_proposal(env, caller, proposal_id)
+    }
+
+    /// Cancel a proposal when timelock expired without sufficient approvals.
+    pub fn cancel_admin_proposal(
+        env: Env,
+        caller: Address,
+        proposal_id: u64,
+    ) -> Result<(), CallRegistryError> {
+        admin::cancel_admin_proposal(env, caller, proposal_id)
+    }
+
     /// Set the maximum allowed call duration in seconds (admin only).
     /// Defaults to 30 days (2_592_000 s). Emits AdminParamsChanged.
     pub fn set_max_duration(env: Env, admin: Address, max_duration_secs: u64) {
@@ -1768,6 +1814,42 @@ impl CallRegistry {
                 config.global_gate_badge,
             ))
         }
+    }
+
+    /// Return the active `StakingGate` for a call, combining per-call and
+    /// global gates into a single enum for convenient views.
+    pub fn get_call_gate(env: Env, call_id: u64) -> Option<StakingGate> {
+        let fields = Self::get_call_gate_fields(env.clone(), call_id)?;
+        let (gate_kind_opt, min_account_age, min_xlm_balance, min_trustlines, badge_opt) = fields;
+        let gate_kind = match gate_kind_opt {
+            Some(k) => k,
+            None => return None,
+        };
+
+        if gate_kind == GATE_NONE {
+            return Some(StakingGate::None);
+        }
+
+        if gate_kind == GATE_MIN_ACCOUNT_AGE {
+            return Some(StakingGate::MinAccountAge(min_account_age));
+        }
+
+        if gate_kind == GATE_MIN_XLM_BALANCE {
+            return Some(StakingGate::MinXlmBalance(min_xlm_balance));
+        }
+
+        if gate_kind == GATE_MIN_TRUSTLINES {
+            return Some(StakingGate::MinTrustlines(min_trustlines));
+        }
+
+        if gate_kind == GATE_HOLDS_BADGE {
+            if let Some(badge) = badge_opt {
+                return Some(StakingGate::HoldsBadge(badge));
+            }
+            return None;
+        }
+
+        None
     }
 
     /// Check if a user qualifies to stake on a call
