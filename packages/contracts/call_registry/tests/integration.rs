@@ -352,6 +352,11 @@ fn test_creator_reputation_accumulates_across_calls() {
             metadata_hash: BytesN::from_array(&env, &[0u8; 32]),
             condition: ConditionType::TargetAbove(100_000_000_i128),
             outcome_count: 2,
+            gate_kind: None,
+            gate_min_account_age: 0u32,
+            gate_min_xlm_balance: 0i128,
+            gate_min_trustlines: 0u32,
+            gate_badge: None,
         };
         registry_client.create_call(&creator, &args);
     }
@@ -426,6 +431,11 @@ fn test_three_outcome_market() {
         metadata_hash: BytesN::from_array(&env, &[0u8; 32]),
         condition: ConditionType::TargetAbove(100_000_000_i128),
         outcome_count: 3,
+        gate_kind: None,
+        gate_min_account_age: 0u32,
+        gate_min_xlm_balance: 0i128,
+        gate_min_trustlines: 0u32,
+        gate_badge: None,
     };
     let call = registry_client.create_call(&creator, &args);
 
