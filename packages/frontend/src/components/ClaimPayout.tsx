@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useWalletContext } from "./WalletContext";
 import { signTransactionWithWallet } from "@/lib/walletSigning";
 import GasFeeDisplay from "./GasFeeDisplay";
+import NetworkMismatchBanner from "./NetworkMismatchBanner";
 import {
   claimPayout,
   describeApiError,
@@ -23,18 +24,35 @@ interface Props {
 type ClaimStatus = "idle" | "pending" | "confirmed" | "error";
 
 export default function ClaimPayout({ market, stake, onClaimed }: Props) {
-  const { isConnected, walletType, publicKey } = useWalletContext();
+  const {
+    isConnected,
+    walletType,
+    publicKey,
+    network,
+    networkStatus,
+    requireNetworkMatch,
+  } = useWalletContext();
   const [status, setStatus] = useState<ClaimStatus>("idle");
   const [txHash, setTxHash] = useState<string | null>(stake.claimTxHash);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  const networkMismatch = networkStatus.status !== "match";
   const alreadyClaimed = stake.status === "CLAIMED" || status === "confirmed";
+
+  // Reset cached claim state when the account or network changes.
+  useEffect(() => {
+    setStatus("idle");
+    setTxHash(stake.claimTxHash);
+    setErrorMsg(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [publicKey, network]);
   const isWinner = stake.status !== "LOST";
   const payoutStroops = stake.payoutStroops ?? 0n;
   const profitStroops = payoutStroops - stake.amountStroops;
 
   const handleClaim = async () => {
     if (!isConnected || !publicKey || alreadyClaimed) return;
+    requireNetworkMatch();
     setStatus("pending");
     setErrorMsg(null);
 
@@ -140,6 +158,8 @@ export default function ClaimPayout({ market, stake, onClaimed }: Props) {
         <GasFeeDisplay />
       </div>
 
+      <NetworkMismatchBanner />
+
       {status === "error" && errorMsg && (
         <p
           role="alert"
@@ -151,11 +171,11 @@ export default function ClaimPayout({ market, stake, onClaimed }: Props) {
 
       <button
         onClick={handleClaim}
-        disabled={status === "pending" || !isConnected}
+        disabled={status === "pending" || !isConnected || networkMismatch}
         className={`w-full py-4 rounded-2xl font-black text-base transition-all active:scale-95 flex items-center justify-center gap-2 ${
           status === "pending"
             ? "bg-green-400 text-white cursor-wait"
-            : !isConnected
+            : !isConnected || networkMismatch
               ? "bg-gray-100 text-gray-400 cursor-not-allowed"
               : "bg-green-600 text-white hover:bg-green-700 shadow-lg shadow-green-200"
         }`}
@@ -187,6 +207,11 @@ export default function ClaimPayout({ market, stake, onClaimed }: Props) {
       {!isConnected && (
         <p className="text-xs text-center text-gray-400 mt-2">
           Connect your wallet to claim
+        </p>
+      )}
+      {isConnected && networkMismatch && (
+        <p className="text-xs text-center text-amber-600 mt-2">
+          Switch your wallet to the configured network to claim
         </p>
       )}
     </div>

@@ -14,6 +14,8 @@ import {
   type StepErrors,
 } from "@/components/create/types";
 import { signWithFreighter } from "@/lib/freighter";
+import { useWalletContext } from "./WalletContext";
+import NetworkMismatchBanner from "./NetworkMismatchBanner";
 
 const steps = [
   { title: "Token" },
@@ -79,6 +81,8 @@ function hasErrors(errors: StepErrors) {
 }
 
 export default function CreateCallForm() {
+  const { networkStatus, requireNetworkMatch } = useWalletContext();
+  const networkMismatch = networkStatus.status !== "match";
   const [currentStep, setCurrentStep] = useState(0);
   const [errors, setErrors] = useState<StepErrors>({});
   const [loading, setLoading] = useState(false);
@@ -125,6 +129,7 @@ export default function CreateCallForm() {
     setLoading(true);
 
     try {
+      requireNetworkMatch();
       const unsignedXDR = "AAAA...";
       await signWithFreighter(unsignedXDR);
       window.location.href = "/calls/123";
@@ -198,6 +203,8 @@ export default function CreateCallForm() {
         )}
       </div>
 
+      <NetworkMismatchBanner />
+
       <div className="mt-8 flex flex-col-reverse gap-3 border-t border-gray-100 pt-5 sm:flex-row sm:justify-between">
         <button
           type="button"
@@ -222,7 +229,7 @@ export default function CreateCallForm() {
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={loading}
+            disabled={loading || networkMismatch}
             className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-70"
           >
             {loading ? (

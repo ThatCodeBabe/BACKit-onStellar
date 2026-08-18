@@ -12,7 +12,9 @@ declare global {
     freighter?: {
       isConnected: () => Promise<boolean>;
       getPublicKey: () => Promise<string>;
-      signMessage: (message: string) => Promise<{ signedMessage: string; signature: string }>;
+      signMessage: (
+        message: string,
+      ) => Promise<{ signedMessage: string; signature: string }>;
       getNetwork: () => Promise<{ network: string; networkPassphrase: string }>;
     };
     lobstr?: {
@@ -26,7 +28,12 @@ declare global {
 export type WalletState =
   | { status: "disconnected" }
   | { status: "connecting" }
-  | { status: "connected"; publicKey: string; network: string; walletType: WalletType }
+  | {
+      status: "connected";
+      publicKey: string;
+      network: string;
+      walletType: WalletType;
+    }
   | { status: "error"; message: string };
 
 const STORAGE_KEY = "backit_wallet_pubkey";
@@ -50,14 +57,26 @@ export function buildChallenge(publicKey: string): string {
 }
 
 export function buildAuthToken(publicKey: string, signature: string): string {
-  const payload = { publicKey, signature, issuedAt: Date.now(), ttl: 86_400_000 };
+  const payload = {
+    publicKey,
+    signature,
+    issuedAt: Date.now(),
+    ttl: 86_400_000,
+  };
   return btoa(JSON.stringify(payload));
 }
 
 export function parseAuthToken(token: string): {
-  publicKey: string; signature: string; issuedAt: number; ttl: number;
+  publicKey: string;
+  signature: string;
+  issuedAt: number;
+  ttl: number;
 } | null {
-  try { return JSON.parse(atob(token)); } catch { return null; }
+  try {
+    return JSON.parse(atob(token));
+  } catch {
+    return null;
+  }
 }
 
 export function isTokenValid(token: string): boolean {
@@ -90,7 +109,10 @@ export async function detectWallets(): Promise<Record<WalletType, boolean>> {
 
 export function useWallet() {
   const [wallet, setWallet] = useState<WalletState>({ status: "disconnected" });
-  const [installedWallets, setInstalledWallets] = useState<Record<WalletType, boolean> | null>(null);
+  const [installedWallets, setInstalledWallets] = useState<Record<
+    WalletType,
+    boolean
+  > | null>(null);
 
   // Detect wallets on mount
   useEffect(() => {
@@ -103,7 +125,9 @@ export function useWallet() {
     const restore = async () => {
       const storedKey = localStorage.getItem(STORAGE_KEY);
       const storedToken = sessionStorage.getItem(AUTH_TOKEN_KEY);
-      const storedType = localStorage.getItem(STORAGE_WALLET_TYPE) as WalletType | null;
+      const storedType = localStorage.getItem(
+        STORAGE_WALLET_TYPE,
+      ) as WalletType | null;
 
       if (!storedKey || !storedToken || !storedType) return;
       if (!isTokenValid(storedToken)) {
@@ -118,18 +142,39 @@ export function useWallet() {
           const connected = await window.freighter.isConnected();
           if (!connected) return;
           const liveKey = await window.freighter.getPublicKey();
-          if (liveKey !== storedKey) { clearStorage(); return; }
+          if (liveKey !== storedKey) {
+            clearStorage();
+            return;
+          }
           const { network } = await window.freighter.getNetwork();
-          setWallet({ status: "connected", publicKey: liveKey, network, walletType: "freighter" });
+          setWallet({
+            status: "connected",
+            publicKey: liveKey,
+            network,
+            walletType: "freighter",
+          });
         } else if (storedType === "lobstr" && window.lobstr) {
           const connected = await window.lobstr.isConnected();
           if (!connected) return;
           const liveKey = await window.lobstr.getPublicKey();
-          if (liveKey !== storedKey) { clearStorage(); return; }
-          setWallet({ status: "connected", publicKey: liveKey, network: "PUBLIC", walletType: "lobstr" });
+          if (liveKey !== storedKey) {
+            clearStorage();
+            return;
+          }
+          setWallet({
+            status: "connected",
+            publicKey: liveKey,
+            network: "PUBLIC",
+            walletType: "lobstr",
+          });
         } else if (storedType === "albedo") {
           // Albedo doesn't persist connection; restore from stored key only
-          setWallet({ status: "connected", publicKey: storedKey, network: "PUBLIC", walletType: "albedo" });
+          setWallet({
+            status: "connected",
+            publicKey: storedKey,
+            network: "PUBLIC",
+            walletType: "albedo",
+          });
         }
       } catch {
         // Wallet not ready; user will need to reconnect
@@ -161,13 +206,11 @@ export function useWallet() {
         const challenge = buildChallenge(publicKey);
         const result = await window.freighter.signMessage(challenge);
         signature = result.signature;
-
       } else if (walletType === "lobstr") {
         if (!window.lobstr) throw new Error("Lobstr not installed");
         publicKey = await window.lobstr.getPublicKey();
         // Lobstr doesn't support signMessage; use publicKey as signature placeholder
         signature = publicKey;
-
       } else {
         // Albedo
         const result = await albedo.publicKey({});
@@ -183,7 +226,8 @@ export function useWallet() {
       setWallet({ status: "connected", publicKey, network, walletType });
     } catch (err: any) {
       const message =
-        err?.message?.includes("User declined") || err?.message?.includes("rejected")
+        err?.message?.includes("User declined") ||
+        err?.message?.includes("rejected")
           ? "Connection declined — please approve in your wallet."
           : (err?.message ?? "Connection failed");
       setWallet({ status: "error", message });
@@ -199,6 +243,8 @@ export function useWallet() {
   const publicKey = wallet.status === "connected" ? wallet.publicKey : null;
   const isConnected = wallet.status === "connected";
   const walletType = wallet.status === "connected" ? wallet.walletType : null;
+  /** Wallet-reported network name (e.g. `PUBLIC` / `TESTNET`), when connected. */
+  const network = wallet.status === "connected" ? wallet.network : null;
   const shortAddress = publicKey
     ? `${publicKey.slice(0, 4)}...${publicKey.slice(-4)}`
     : null;
@@ -210,6 +256,7 @@ export function useWallet() {
     wallet,
     publicKey,
     isConnected,
+    network,
     shortAddress,
     walletType,
     installedWallets,

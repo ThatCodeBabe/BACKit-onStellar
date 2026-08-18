@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import PayoutCalculator from "./PayoutCalculator";
 import GasFeeDisplay from "./GasFeeDisplay";
+import NetworkMismatchBanner from "./NetworkMismatchBanner";
 import { useWalletContext } from "./WalletContext";
 import { signTransactionWithWallet } from "@/lib/walletSigning";
 import {
@@ -39,7 +40,16 @@ export default function StakingInterface({ market, odds, onStaked }: Props) {
   const [comment, setComment] = useState<string>("");
   const [txHash, setTxHash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const { isConnected, publicKey, walletType } = useWalletContext();
+  const {
+    isConnected,
+    publicKey,
+    walletType,
+    network,
+    networkStatus,
+    requireNetworkMatch,
+  } = useWalletContext();
+
+  const networkMismatch = networkStatus.status !== "match";
 
   const amountStroops = parseAmount(amount);
   const marketClosed =
@@ -50,11 +60,21 @@ export default function StakingInterface({ market, odds, onStaked }: Props) {
     !!selectedSide &&
     amountStroops !== null &&
     isConnected &&
+    !networkMismatch &&
     !marketClosed &&
     !isStaking;
 
+  // Clear cached transaction state whenever the account or network changes so
+  // a stale hash/error from a previous wallet cannot linger in the view.
+  useEffect(() => {
+    setTxHash(null);
+    setError(null);
+    setIsStaking(false);
+  }, [publicKey, network]);
+
   const handleStake = async () => {
     if (!selectedSide || amountStroops === null || !publicKey) return;
+    requireNetworkMatch();
 
     setIsStaking(true);
     setError(null);
@@ -242,6 +262,8 @@ export default function StakingInterface({ market, odds, onStaked }: Props) {
         </p>
       )}
 
+      <NetworkMismatchBanner />
+
       {/* Stake button */}
       <button
         onClick={handleStake}
@@ -289,6 +311,11 @@ export default function StakingInterface({ market, odds, onStaked }: Props) {
       {!isConnected && !marketClosed && (
         <p className="mt-3 text-xs text-center text-gray-400">
           Connect your wallet to stake
+        </p>
+      )}
+      {isConnected && networkMismatch && !marketClosed && (
+        <p className="mt-3 text-xs text-center text-amber-600">
+          Switch your wallet to the configured network to stake
         </p>
       )}
 

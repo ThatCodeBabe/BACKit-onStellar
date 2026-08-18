@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import ActiveAlerts from "./ActiveAlerts";
+import NetworkMismatchBanner from "./NetworkMismatchBanner";
 import { useWalletContext } from "./WalletContext";
 import { signTransactionWithWallet } from "@/lib/walletSigning";
 import {
@@ -52,8 +53,17 @@ export default function PortfolioDashboard({
   address,
   stakeToken = "XLM",
 }: PortfolioDashboardProps) {
-  const { publicKey, walletType, isConnected } = useWalletContext();
+  const {
+    publicKey,
+    walletType,
+    isConnected,
+    network,
+    networkStatus,
+    requireNetworkMatch,
+  } = useWalletContext();
   const [state, setState] = useState<LoadState>({ status: "loading" });
+
+  const networkMismatch = networkStatus.status !== "match";
 
   const [activeTab, setActiveTab] = useState<TabType>("active");
   const [sortKey, setSortKey] = useState<SortKey>("date");
@@ -87,12 +97,14 @@ export default function PortfolioDashboard({
     [address],
   );
 
+  // Re-read on account/network change; the cleanup aborts any in-flight request
+  // so a stale response from a previous account/network cannot win the race.
   useEffect(() => {
     if (!address) return;
     const controller = new AbortController();
     loadPortfolio(controller.signal);
     return () => controller.abort();
-  }, [address, loadPortfolio]);
+  }, [address, network, loadPortfolio]);
 
   const stakes = useMemo(
     () => (state.status === "ready" ? state.portfolio.stakes : []),
@@ -101,6 +113,7 @@ export default function PortfolioDashboard({
 
   const handleClaim = async (stake: PortfolioStake) => {
     if (!isOwnPortfolio || !publicKey) return;
+    requireNetworkMatch();
     setClaimingId(stake.id);
     setClaimMessage(null);
     try {
@@ -577,6 +590,9 @@ export default function PortfolioDashboard({
           {/* Claimable Payouts List */}
           {activeTab === "claimable" && (
             <div>
+              {networkMismatch && claimableStakes.length > 0 && (
+                <NetworkMismatchBanner />
+              )}
               {claimableStakes.length === 0 ? (
                 <div className="text-center py-12">
                   <Award className="w-12 h-12 text-gray-300 mx-auto mb-3" />
@@ -646,7 +662,11 @@ export default function PortfolioDashboard({
                       <div className="w-full md:w-auto">
                         <button
                           onClick={() => handleClaim(stake)}
-                          disabled={claimingId === stake.id || !isOwnPortfolio}
+                          disabled={
+                            claimingId === stake.id ||
+                            !isOwnPortfolio ||
+                            networkMismatch
+                          }
                           className="w-full md:w-auto px-6 py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white font-black text-sm shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:pointer-events-none"
                         >
                           {claimingId === stake.id ? (
