@@ -32,6 +32,7 @@ import { StakesModule } from './stakes/stakes.module';
 import { EventStoreModule } from './event-store/event-store.module';
 import { GraphqlModule } from './graphql/graphql.module';
 import { WebhooksModule } from './webhooks/webhook.module';
+import { ReconciliationModule } from './reconciliation/reconciliation.module';
 
 @Module({
   imports: [
@@ -79,6 +80,7 @@ import { WebhooksModule } from './webhooks/webhook.module';
     EventStoreModule,
     GraphqlModule,
     WebhooksModule,
+    ReconciliationModule,
   ],
   controllers: [],
   providers: [{ provide: APP_INTERCEPTOR, useClass: LoggingInterceptor }],
