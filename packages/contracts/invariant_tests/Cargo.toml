@@ -1,0 +1,17 @@
+[package]
+name = "invariant-tests"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Stateful invariant and differential tests for BACKit prediction-settlement contracts (issue #563)."
+
+# Pure-Rust model-level tests – no WASM, no Soroban SDK dependency needed.
+# The reference model and harness are stdlib-only so this crate compiles
+# fast and runs as a normal `cargo test` target.
+[lib]
+name = "invariant_tests"
+path = "src/lib.rs"
+
+# No [dependencies] needed: model/generator/assertions are stdlib-only.
+# Add Soroban dev-dependencies here when contract-client differential tests
+# are wired up in a future iteration.
