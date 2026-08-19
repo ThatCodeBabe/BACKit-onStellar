@@ -40,7 +40,7 @@ export default function CallDetail({ market, onRefresh }: Props) {
   const [stakesError, setStakesError] = useState<string | null>(null);
   const [stakesLoading, setStakesLoading] = useState(true);
   const isMobile = useMediaQuery("(max-width: 768px)");
-  const { publicKey } = useWalletContext();
+  const { publicKey, network } = useWalletContext();
 
   const odds = useMemo(
     () => deriveOdds(market.totalYesStroops, market.totalNoStroops),
@@ -89,7 +89,10 @@ export default function CallDetail({ market, onRefresh }: Props) {
         if (!signal?.aborted) setPosition(null);
       }
     },
-    [publicKey, market.id],
+    // `network` is not read here but is kept as an invalidation key so the
+    // query aborts (and cached position clears) when the wallet network changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [publicKey, network, market.id],
   );
 
   useEffect(() => {

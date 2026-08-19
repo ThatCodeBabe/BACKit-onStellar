@@ -6,6 +6,7 @@ import { ThemeProvider } from "@/contexts/ThemeContext";
 import { WebSocketProvider } from "@/contexts/WebSocketContext";
 import { NavBar } from "@/components/NavBar";
 import { I18nProvider } from "@/components/I18nProvider";
+import NetworkConfigBanner from "@/components/NetworkConfigBanner";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -15,8 +16,10 @@ export const metadata = {
 };
 
 const WS_URL =
-  (process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001")
-    .replace(/^http/, "ws") + "/ws";
+  (process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001").replace(
+    /^http/,
+    "ws",
+  ) + "/ws";
 
 export default function RootLayout({
   children,
@@ -30,6 +33,7 @@ export default function RootLayout({
           <ThemeProvider>
             <WebSocketProvider url={WS_URL}>
               <WalletProvider>
+                <NetworkConfigBanner />
                 <PlatformConfigProvider>
                   <NavBar />
                   <main>{children}</main>

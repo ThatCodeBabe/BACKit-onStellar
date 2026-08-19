@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import PortfolioDashboard from "./PortfolioDashboard";
@@ -9,12 +9,21 @@ vi.mock("./ActiveAlerts", () => ({
   default: () => null,
 }));
 
-vi.mock("./WalletContext", () => ({
-  useWalletContext: () => ({
-    publicKey: ADDRESS,
-    walletType: "freighter",
+const { walletContext } = vi.hoisted(() => ({
+  walletContext: {
+    publicKey: "GSTAKER",
+    walletType: "freighter" as string | null,
     isConnected: true,
-  }),
+    network: "TESTNET" as string | null,
+    networkStatus: { status: "match" },
+    requireNetworkMatch: () => {},
+    configuredNetwork: "TESTNET" as string | null,
+    networkConfigErrors: [] as string[],
+  },
+}));
+
+vi.mock("./WalletContext", () => ({
+  useWalletContext: () => walletContext,
 }));
 
 const claimPayoutMock = vi.fn();
@@ -106,10 +115,34 @@ function page(data: unknown[]) {
   return { data, total: data.length, page: 1, limit: 50 };
 }
 
+beforeEach(() => {
+  walletContext.publicKey = ADDRESS;
+  walletContext.walletType = "freighter";
+  walletContext.isConnected = true;
+  walletContext.network = "TESTNET";
+  walletContext.networkStatus = { status: "match" };
+  walletContext.requireNetworkMatch = () => {};
+  walletContext.configuredNetwork = "TESTNET";
+  walletContext.networkConfigErrors = [];
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
   claimPayoutMock.mockReset();
 });
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => (resolve = res));
+  return { promise, resolve };
+}
 
 describe("PortfolioDashboard", () => {
   it("shows the empty state for a wallet with no stakes", async () => {
@@ -204,5 +237,79 @@ describe("PortfolioDashboard", () => {
 
     expect(await screen.findByText(/backend unavailable/i)).toBeInTheDocument();
     expect(screen.queryByText("BTC over 50k")).not.toBeInTheDocument();
+  });
+
+  it("blocks claims and shows a recovery action when the wallet network mismatches", async () => {
+    walletContext.network = "PUBLIC";
+    walletContext.networkStatus = { status: "mismatch" };
+    mockHttp({ stakes: page([resolvedWonStake]), payouts: [] });
+
+    render(<PortfolioDashboard address={ADDRESS} />);
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: /claimable payouts/i }),
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /wallet network mismatch/i,
+    );
+    expect(
+      screen.getByRole("button", { name: /claim payout/i }),
+    ).toBeDisabled();
+    expect(claimPayoutMock).not.toHaveBeenCalled();
+  });
+
+  it("ignores a stale response when the network changes mid-request", async () => {
+    const staleStakes = deferred<Response>();
+    const staleTitle = "Stale market from old network";
+    const freshTitle = "BTC over 50k";
+
+    // First stakes request (old network) is held open; the second resolves.
+    const stakesHandlers = [
+      () => staleStakes.promise,
+      () => Promise.resolve(jsonResponse(page([stakeDto()]))),
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/payouts")) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        const handler = stakesHandlers.shift();
+        return handler
+          ? handler()
+          : Promise.resolve(
+              jsonResponse({ data: [], total: 0, page: 1, limit: 50 }),
+            );
+      }),
+    );
+
+    const { rerender } = render(<PortfolioDashboard address={ADDRESS} />);
+
+    // Old network's request is in-flight (loading state).
+    expect(screen.getByRole("status")).toBeInTheDocument();
+
+    // Wallet switches network; the component re-reads and aborts the old read.
+    walletContext.network = "PUBLIC";
+    rerender(<PortfolioDashboard address={ADDRESS} />);
+
+    expect(await screen.findByText(freshTitle)).toBeInTheDocument();
+
+    // The stale response finally arrives — it must not clobber the fresh view.
+    staleStakes.resolve(
+      jsonResponse(
+        page([
+          stakeDto({
+            call: { ...stakeDto().call, title: staleTitle },
+          }),
+        ]),
+      ),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText(freshTitle)).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(staleTitle)).not.toBeInTheDocument();
   });
 });
